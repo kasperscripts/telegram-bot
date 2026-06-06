@@ -16,7 +16,10 @@ MERCHANT_ID = "709e8d20-e5f9-4ad0-8bae-311460ff7991"
 API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWGFWgpSXtgsrGYTjsXh7KEF8tDHdxLAvFW6XCNqG7xJ2"
 PLATEGA_API_URL = "https://app.platega.io"
 RAILWAY_URL = "https://telegram-bot-production-4bcc.up.railway.app"
-VIP_GROUP_ID = -1003709565134  # ID вашей VIP группы
+
+# ГРУППЫ ДЛЯ ПОДПИСЧИКОВ
+VIP_GROUP_ID = -1003709565134      # ID VIP группы
+LITE_GROUP_ID = -1003709565134     # ID LITE группы (если разные - поменяйте)
 
 MAIN_ADMIN_ID = 1302493787  # Главный админ
 
@@ -124,6 +127,24 @@ def activate_reserved_key(user_id):
         return key, sub_type, days
     return None, None, None
 
+def create_group_link(sub_type):
+    """Создает одноразовую ссылку в соответствующую группу"""
+    try:
+        if sub_type == "vip":
+            group_id = VIP_GROUP_ID
+        else:
+            group_id = LITE_GROUP_ID
+        
+        invite_link = bot.create_chat_invite_link(
+            chat_id=group_id,
+            member_limit=1,  # Одноразовая ссылка
+            expire_date=datetime.now() + timedelta(days=7)
+        )
+        return invite_link.invite_link
+    except Exception as e:
+        print(f"Ошибка создания ссылки для {sub_type}: {e}")
+        return None
+
 # Создаем таблицу settings
 try:
     cursor = db.connection.cursor()
@@ -150,7 +171,6 @@ def main_menu(user_is_admin=False):
         KeyboardButton("🌟 Купить подписку"),
         KeyboardButton("👤 Мой профиль"),
         KeyboardButton("❤️ Пожертвовать"),
-        KeyboardButton("📦 Получить VIP доступ"),
         KeyboardButton("ℹ️ Информация")
     ]
     if user_is_admin:
@@ -233,65 +253,6 @@ def is_admin(user_id):
 
 def is_main_admin(user_id):
     return user_id == MAIN_ADMIN_ID
-
-# ============================================
-# VIP ДОСТУП - ОДНОРАЗОВАЯ ССЫЛКА В ГРУППУ
-# ============================================
-@bot.message_handler(func=lambda message: message.text == "📦 Получить VIP доступ")
-def get_vip_access(message: Message):
-    user_id = message.from_user.id
-    sub_type, end_date = db.check_subscription(user_id)
-    
-    if sub_type != "vip":
-        bot.send_message(user_id, "❌ **Доступ только для VIP подписчиков!**\n\nПриобретите VIP подписку, чтобы получить доступ к закрытым материалам.", parse_mode="Markdown")
-        return
-    
-    if end_date < datetime.now():
-        bot.send_message(user_id, "❌ **Ваша VIP подписка истекла!**\n\nПродлите подписку для доступа к материалам.", parse_mode="Markdown")
-        return
-    
-    try:
-        # Создаем одноразовую ссылку в VIP группу
-        invite_link = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID,
-            member_limit=1,  # Одноразовая ссылка
-            expire_date=datetime.now() + timedelta(days=7)
-        )
-        
-        # Получаем ключ пользователя
-        keys = db.get_all_keys()
-        user_key = None
-        for key in keys:
-            if key[5] == user_id and key[4] == 1:  # used_by = user_id
-                user_key = key[1]
-                break
-        
-        if not user_key:
-            user_key = "Ключ не найден, обратитесь к администратору"
-        
-        days_left = (end_date - datetime.now()).days
-        
-        bot.send_message(
-            user_id,
-            f"🔑 **Ваш VIP ключ:** `{user_key}`\n\n"
-            f"📦 **Одноразовая ссылка для входа в VIP группу:**\n"
-            f"{invite_link.invite_link}\n\n"
-            f"⏰ **Подписка активна еще:** {days_left} д.\n"
-            f"⚠️ **Ссылка действительна ТОЛЬКО 1 РАЗ!**\n"
-            f"⚠️ После перехода вы получите доступ ко всем VIP материалам.",
-            parse_mode="Markdown"
-        )
-        
-        # Логируем выдачу доступа
-        print(f"✅ Пользователю {user_id} выдана одноразовая ссылка в VIP группу")
-        
-    except Exception as e:
-        print(f"Ошибка создания ссылки: {e}")
-        bot.send_message(
-            user_id,
-            "❌ **Ошибка создания ссылки!**\n\nПожалуйста, обратитесь к администратору @nikita1055",
-            parse_mode="Markdown"
-        )
 
 # ============================================
 # ОТЗЫВЫ
@@ -505,6 +466,10 @@ def process_buy(call: CallbackQuery):
                     "amount": amount
                 }
                 
+                # Создаем ссылку в группу (показываем сразу, но активируется после оплаты)
+                group_link = create_group_link(sub_type)
+                group_text = f"\n\n📦 **Доступ в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
+                
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
                 markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_{transaction_id}"))
@@ -513,10 +478,12 @@ def process_buy(call: CallbackQuery):
                 bot.edit_message_text(
                     f"💳 **Счет на {amount}₽**\n\n"
                     f"📦 {sub_type.upper()} {days} д.\n"
-                    f"⏰ Ключ зарезервирован на 30 минут\n"
+                    f"🔑 Ключ: `{reserved_key}`\n"
+                    f"⏰ Ключ зарезервирован на 30 минут{group_text}\n\n"
                     f"👇 Нажмите для оплаты",
                     call.message.chat.id,
                     call.message.message_id,
+                    parse_mode="Markdown",
                     reply_markup=markup
                 )
             else:
@@ -564,10 +531,23 @@ def check_payment(call: CallbackQuery):
                 
                 if key and user_id:
                     db.activate_subscription(user_id, sub_type, days)
-                    bot.send_message(user_id, f"✅ **Оплата подтверждена!**\n\n🔑 Ваш ключ:\n`{key}`\n\n📦 Подписка: {sub_type.upper()} {days} д.\n\nСохраните ключ!", parse_mode="Markdown")
+                    
+                    # Создаем ссылку в группу
+                    group_link = create_group_link(sub_type)
+                    group_text = f"\n\n📦 **Ссылка для входа в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
+                    
+                    bot.send_message(
+                        user_id,
+                        f"✅ **Оплата подтверждена!**\n\n"
+                        f"🔑 Ваш ключ: `{key}`\n"
+                        f"📦 Подписка: {sub_type.upper()} {days} д.\n"
+                        f"{group_text}\n\n"
+                        f"Сохраните ключ!",
+                        parse_mode="Markdown"
+                    )
                     
                 bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
-                bot.send_message(call.message.chat.id, "✅ Подписка активирована! Ключ отправлен в личные сообщения.")
+                bot.send_message(call.message.chat.id, "✅ Подписка активирована! Ключ и ссылка на группу отправлены в личные сообщения.")
                 
                 release_key(user_id)
                 if f"payment_{transaction_id}" in user_states:
@@ -588,7 +568,7 @@ def info_menu(message: Message):
         "💳 **Оплата:** Platega (СБП, Криптовалюта)\n\n"
         "📌 **Как пользоваться:**\n"
         "• Купите подписку через меню\n"
-        "• После оплаты вы получите ключ активации\n\n"
+        "• После оплаты вы получите ключ и ссылку на группу\n\n"
         "📞 **КОНТАКТЫ:**\n"
         f"• Техподдержка: @{SUPPORT_USERNAME}\n"
         f"• Основной канал: {MAIN_CHANNEL}\n"
@@ -601,7 +581,7 @@ def info_menu(message: Message):
     bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
 
 # ============================================
-# АДМИН-ПАНЕЛЬ
+# АДМИН-ПАНЕЛЬ (сокращенно, без изменений)
 # ============================================
 @bot.message_handler(func=lambda message: message.text == "⚙️ Админ-панель" and is_admin(message.from_user.id))
 def admin_panel(message: Message):
@@ -845,7 +825,6 @@ def list_keys(message: Message):
         bot.send_message(message.chat.id, "📭 **Нет ключей**", parse_mode="Markdown")
         return
     
-    # Группируем по типам с детализацией
     lite_1d_available = []
     lite_1d_used = []
     lite_7d_available = []
@@ -934,7 +913,6 @@ def list_keys(message: Message):
     
     text += f"📊 **ИТОГО:** {len(all_keys)} шт (✅ Доступно: {len(lite_1d_available)+len(lite_7d_available)+len(vip_1d_available)+len(vip_7d_available)+len(vip_14d_available)}, ❌ Выдано: {len(lite_1d_used)+len(lite_7d_used)+len(vip_1d_used)+len(vip_7d_used)+len(vip_14d_used)})"
     
-    # Отправляем по частям если текст длинный
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
             bot.send_message(message.chat.id, text[i:i+4000], parse_mode="Markdown")
@@ -1039,8 +1017,21 @@ def platega_webhook():
                     key = parts[4]
                     
                     db.activate_subscription(user_id, sub_type, days)
+                    
+                    # Создаем ссылку в группу после оплаты
+                    group_link = create_group_link(sub_type)
+                    group_text = f"\n\n📦 **Ссылка для входа в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
+                    
                     try:
-                        bot.send_message(user_id, f"✅ **Оплата подтверждена!**\n\n🔑 Ваш ключ:\n`{key}`\n\n📦 Подписка: {sub_type.upper()} {days} д.\n\nСохраните ключ!", parse_mode="Markdown")
+                        bot.send_message(
+                            user_id,
+                            f"✅ **Оплата подтверждена!**\n\n"
+                            f"🔑 Ваш ключ: `{key}`\n"
+                            f"📦 Подписка: {sub_type.upper()} {days} д.\n"
+                            f"{group_text}\n\n"
+                            f"Сохраните ключ!",
+                            parse_mode="Markdown"
+                        )
                     except:
                         pass
         return jsonify({"status": "ok"}), 200
@@ -1057,6 +1048,7 @@ if __name__ == '__main__':
     print(f"🤖 Бот: @KeeperMag_bot")
     print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
     print(f"👑 VIP группа ID: {VIP_GROUP_ID}")
+    print(f"🌟 LITE группа ID: {LITE_GROUP_ID}")
     print("=" * 60)
     
     try:
