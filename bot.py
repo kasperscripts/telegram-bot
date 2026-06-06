@@ -189,14 +189,19 @@ def process_buy(call: CallbackQuery):
     }
     
     try:
-        response = requests.post(f"{PLATEGA_API_URL}/transaction/process", headers=headers, json=payment_data, timeout=30)
+        # Пробуем оба возможных эндпоинта
+        response = requests.post(f"{PLATEGA_API_URL}/v2/transaction/process", headers=headers, json=payment_data, timeout=30)
+        
+        if response.status_code != 200:
+            response = requests.post(f"{PLATEGA_API_URL}/transaction/process", headers=headers, json=payment_data, timeout=30)
+        
         print(f"Статус Platega: {response.status_code}")
         print(f"Ответ: {response.text}")
         
         if response.status_code == 200:
             result = response.json()
-            payment_url = result.get("redirect")
-            transaction_id = result.get("transactionId")
+            payment_url = result.get("redirect") or result.get("payment_url")
+            transaction_id = result.get("transactionId") or result.get("id")
             
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
@@ -213,7 +218,7 @@ def process_buy(call: CallbackQuery):
             )
         else:
             bot.edit_message_text(
-                f"❌ Ошибка создания платежа\nКод: {response.status_code}",
+                f"❌ Ошибка создания платежа\nКод: {response.status_code}\n{response.text[:200]}",
                 call.message.chat.id,
                 call.message.message_id
             )
@@ -236,8 +241,6 @@ def check_payment(call: CallbackQuery):
             if data.get("status") == "CONFIRMED":
                 bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
                 bot.send_message(call.message.chat.id, "✅ Подписка активирована!")
-                # Активируем подписку в базе данных
-                # Здесь нужна функция активации
             else:
                 bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
@@ -319,7 +322,7 @@ def back_to_menu(call: CallbackQuery):
     bot.send_message(call.message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(call.from_user.id)))
 
 # ============================================
-# FLASK ПРИЛОЖЕНИЕ (ВЕБХУКИ)
+# FLASK ПРИЛОЖЕНИЕ
 # ============================================
 @app.route('/')
 def index():
@@ -364,7 +367,6 @@ def platega_webhook():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    # Устанавливаем вебхук Telegram
     try:
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
