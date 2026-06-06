@@ -192,26 +192,22 @@ def process_buy(call: CallbackQuery):
         
         # Отправляем запрос к Platega
         response = requests.post(
-            f"{PLATEGA_API_URL}/v2/transaction/process",
+            f"{PLATEGA_API_URL}/transaction/process",
             headers=headers,
             json=payment_data,
             timeout=30
         )
         
-        # Детальное логирование в консоль Railway
         print("=" * 50)
-        print(f"ЗАПРОС К PLATEGA:")
-        print(f"URL: {PLATEGA_API_URL}/v2/transaction/process")
-        print(f"HEADERS: {headers}")
-        print(f"PAYLOAD: {json.dumps(payment_data, indent=2)}")
-        print(f"ОТВЕТ КОД: {response.status_code}")
-        print(f"ОТВЕТ ТЕЛО: {response.text}")
+        print(f"ОТВЕТ PLATEGA: {response.status_code}")
+        print(f"ТЕЛО: {response.text}")
         print("=" * 50)
         
         if response.status_code == 200:
             result = response.json()
-            payment_url = result.get("redirect") or result.get("payment_url")
-            transaction_id = result.get("transactionId") or result.get("id")
+            # Правильный парсинг ответа Platega
+            payment_url = result.get("url")  # Поле называется "url", а не "redirect"
+            transaction_id = result.get("transactionId")
             
             if payment_url and transaction_id:
                 markup = InlineKeyboardMarkup()
@@ -234,9 +230,8 @@ def process_buy(call: CallbackQuery):
                     call.message.message_id
                 )
         else:
-            # Показываем подробную ошибку пользователю
-            error_msg = f"❌ Ошибка создания платежа\n\nКод: {response.status_code}\n\nДля техподдержки:\n```\n{response.text[:300]}\n```"
-            bot.edit_message_text(error_msg, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            error_msg = f"❌ Ошибка создания платежа\n\nКод: {response.status_code}\n\n{response.text[:300]}"
+            bot.edit_message_text(error_msg, call.message.chat.id, call.message.message_id)
             
     except Exception as e:
         error_details = traceback.format_exc()
@@ -363,14 +358,14 @@ def telegram_webhook():
         bot.process_new_updates([update])
         return "OK", 200
     except Exception as e:
-        print(f"Ошибка вебхука Telegram: {e}")
+        print(f"Ошибка: {e}")
         return "Error", 200
 
 @app.route('/webhook', methods=['POST'])
 def platega_webhook():
     try:
         data = request.json
-        print(f"📡 Получен вебхук от Platega: {json.dumps(data, indent=2)}")
+        print(f"📡 Получен вебхук: {json.dumps(data, indent=2)}")
         status = data.get('status')
         payload = data.get('payload')
         
@@ -387,7 +382,7 @@ def platega_webhook():
                     pass
         return jsonify({"status": "ok"}), 200
     except Exception as e:
-        print(f"Ошибка вебхука Platega: {e}")
+        print(f"Ошибка: {e}")
         return jsonify({"status": "error"}), 500
 
 # ============================================
@@ -407,7 +402,7 @@ if __name__ == '__main__':
         resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
         print(f"Установка вебхука: {resp.status_code} - {resp.text}")
     except Exception as e:
-        print(f"Ошибка установки вебхука: {e}")
+        print(f"Ошибка: {e}")
     
     print("✅ Бот готов к работе!")
     app.run(host='0.0.0.0', port=5000)
