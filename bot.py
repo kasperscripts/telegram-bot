@@ -137,7 +137,7 @@ def create_group_link(sub_type):
         
         invite_link = bot.create_chat_invite_link(
             chat_id=group_id,
-            member_limit=1,  # Одноразовая ссылка
+            member_limit=1,
             expire_date=datetime.now() + timedelta(days=7)
         )
         return invite_link.invite_link
@@ -412,6 +412,7 @@ def process_buy(call: CallbackQuery):
             bot.answer_callback_query(call.id, "❌ Ошибка цены!")
             return
 
+        # Резервируем ключ (НЕ ПОКАЗЫВАЕМ пользователю)
         reserved_key = reserve_key(sub_type, days, call.from_user.id)
         if not reserved_key:
             bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
@@ -466,20 +467,16 @@ def process_buy(call: CallbackQuery):
                     "amount": amount
                 }
                 
-                # Создаем ссылку в группу (показываем сразу, но активируется после оплаты)
-                group_link = create_group_link(sub_type)
-                group_text = f"\n\n📦 **Доступ в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
-                
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
                 markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_{transaction_id}"))
                 markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_{transaction_id}"))
 
+                # НЕ ПОКАЗЫВАЕМ ключ и ссылку до оплаты
                 bot.edit_message_text(
                     f"💳 **Счет на {amount}₽**\n\n"
                     f"📦 {sub_type.upper()} {days} д.\n"
-                    f"🔑 Ключ: `{reserved_key}`\n"
-                    f"⏰ Ключ зарезервирован на 30 минут{group_text}\n\n"
+                    f"⏰ Ключ зарезервирован на 30 минут\n\n"
                     f"👇 Нажмите для оплаты",
                     call.message.chat.id,
                     call.message.message_id,
@@ -530,9 +527,10 @@ def check_payment(call: CallbackQuery):
                 user_id = payment_data.get("user_id")
                 
                 if key and user_id:
+                    # Активируем подписку
                     db.activate_subscription(user_id, sub_type, days)
                     
-                    # Создаем ссылку в группу
+                    # ТОЛЬКО ПОСЛЕ ОПЛАТЫ создаем ссылку и отправляем ключ
                     group_link = create_group_link(sub_type)
                     group_text = f"\n\n📦 **Ссылка для входа в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
                     
@@ -547,9 +545,11 @@ def check_payment(call: CallbackQuery):
                     )
                     
                 bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
-                bot.send_message(call.message.chat.id, "✅ Подписка активирована! Ключ и ссылка на группу отправлены в личные сообщения.")
+                bot.send_message(call.message.chat.id, "✅ **Подписка активирована!**\n\nКлюч и ссылка на группу отправлены в личные сообщения.", parse_mode="Markdown")
                 
+                # Очищаем резервирование и удаляем сообщение
                 release_key(user_id)
+                bot.delete_message(call.message.chat.id, call.message.message_id)
                 if f"payment_{transaction_id}" in user_states:
                     del user_states[f"payment_{transaction_id}"]
             else:
@@ -581,7 +581,7 @@ def info_menu(message: Message):
     bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
 
 # ============================================
-# АДМИН-ПАНЕЛЬ (сокращенно, без изменений)
+# АДМИН-ПАНЕЛЬ
 # ============================================
 @bot.message_handler(func=lambda message: message.text == "⚙️ Админ-панель" and is_admin(message.from_user.id))
 def admin_panel(message: Message):
@@ -817,9 +817,6 @@ def update_price(message: Message):
 
 @bot.message_handler(func=lambda message: message.text == "📋 Список ключей" and is_admin(message.from_user.id))
 def list_keys(message: Message):
-    user_id = message.from_user.id
-    is_main = is_main_admin(user_id)
-    
     all_keys = db.get_all_keys()
     if not all_keys:
         bot.send_message(message.chat.id, "📭 **Нет ключей**", parse_mode="Markdown")
@@ -1018,7 +1015,7 @@ def platega_webhook():
                     
                     db.activate_subscription(user_id, sub_type, days)
                     
-                    # Создаем ссылку в группу после оплаты
+                    # ТОЛЬКО ПОСЛЕ ОПЛАТЫ создаем ссылку
                     group_link = create_group_link(sub_type)
                     group_text = f"\n\n📦 **Ссылка для входа в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
                     
@@ -1047,8 +1044,6 @@ if __name__ == '__main__':
     print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
     print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
-    print(f"👑 VIP группа ID: {VIP_GROUP_ID}")
-    print(f"🌟 LITE группа ID: {LITE_GROUP_ID}")
     print("=" * 60)
     
     try:
