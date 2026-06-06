@@ -30,7 +30,7 @@ user_states = {}
 app = Flask(__name__)
 
 # ============================================
-# ФУНКЦИИ ДЛЯ РАБОТЫ С ЦЕНАМИ В БД
+# ФУНКЦИИ ДЛЯ РАБОТЫ С ЦЕНАМИ
 # ============================================
 def get_price(key, default):
     try:
@@ -52,7 +52,7 @@ def set_price(key, value):
     except:
         return False
 
-# Создаем таблицу settings если её нет
+# Создаем таблицу settings
 try:
     cursor = db.connection.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
@@ -60,7 +60,7 @@ try:
 except:
     pass
 
-# Загружаем цены из БД
+# Загружаем цены
 PRICES = {
     "lite_1day": get_price("lite_1day", 140),
     "lite_7day": get_price("lite_7day", 700),
@@ -345,7 +345,7 @@ def change_prices_menu(message: Message):
     text += f"• VIP 1 день: {PRICES['vip_1day']}₽\n"
     text += f"• VIP 7 дней: {PRICES['vip_7day']}₽\n"
     text += f"• VIP 14 дней: {PRICES['vip_14day']}₽\n\n"
-    text += "**Изменить цену:**\nОтправьте в ответ на это сообщение:\n`lite_1day 150`\n`vip_7day 1300`\n\n(через пробел)"
+    text += "**Изменить цену:**\nОтправьте: `lite_1day 150`"
     
     msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
     bot.register_next_step_handler(msg, update_price)
@@ -353,29 +353,23 @@ def change_prices_menu(message: Message):
 def update_price(message: Message):
     try:
         text = message.text.strip()
-        
-        # Разделяем по пробелу или двоеточию
         if ' ' in text:
             key, new_price = text.split(' ')
         elif ':' in text:
             key, new_price = text.split(':')
         else:
-            bot.send_message(message.chat.id, "❌ **Неверный формат!**\nИспользуйте: `lite_1day 150` или `lite_1day:150`", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ Неверный формат! Используйте: `lite_1day 150`", parse_mode="Markdown")
             return
         
         new_price = int(new_price)
-        
         if key in PRICES:
             PRICES[key] = new_price
             set_price(key, new_price)
-            bot.send_message(message.chat.id, f"✅ **Цена {key} изменена на {new_price}₽**", parse_mode="Markdown")
+            bot.send_message(message.chat.id, f"✅ Цена {key} изменена на {new_price}₽", parse_mode="Markdown")
         else:
-            bot.send_message(message.chat.id, f"❌ **Неверный ключ!**\nДоступны: lite_1day, lite_7day, vip_1day, vip_7day, vip_14day", parse_mode="Markdown")
-            
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **Цена должна быть числом!**\nПример: `lite_1day 150`", parse_mode="Markdown")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ **Ошибка:** {str(e)[:100]}", parse_mode="Markdown")
+            bot.send_message(message.chat.id, f"❌ Неверный ключ!", parse_mode="Markdown")
+    except:
+        bot.send_message(message.chat.id, "❌ Ошибка! Пример: `lite_1day 150`", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📋 Список ключей" and is_admin(message.from_user.id))
 def list_keys(message: Message):
@@ -413,9 +407,9 @@ def back_to_menu(call: CallbackQuery):
     bot.send_message(call.message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(call.from_user.id)))
 
 # ============================================
-# FLASK ПРИЛОЖЕНИЕ
+# FLASK ПРИЛОЖЕНИЕ (ВЕБХУК TELEGRAM И PLATEGA)
 # ============================================
-@app.route('/')
+@app.route('/', methods=['GET'])
 def index():
     return "Бот работает!", 200
 
@@ -427,14 +421,14 @@ def telegram_webhook():
         bot.process_new_updates([update])
         return "OK", 200
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка вебхука: {e}")
         return "Error", 200
 
 @app.route('/webhook', methods=['POST'])
 def platega_webhook():
     try:
         data = request.json
-        print(f"📡 Вебхук: {json.dumps(data, indent=2)}")
+        print(f"📡 Вебхук Platega: {json.dumps(data, indent=2)}")
         status = data.get('status')
         payload = data.get('payload')
         
@@ -455,20 +449,33 @@ def platega_webhook():
         return jsonify({"status": "error"}), 500
 
 # ============================================
-# ЗАПУСК
+# ЗАПУСК С ВЕБХУКОМ
 # ============================================
 if __name__ == '__main__':
     print("=" * 60)
-    print("🚀 БОТ ЗАПУЩЕН")
+    print("🚀 БОТ ЗАПУЩЕН С ВЕБХУКОМ")
     print(f"🤖 Бот: @KeeperMag_bot")
-    print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
+    print(f"📡 Webhook URL: {RAILWAY_URL}/telegram_webhook")
     print("=" * 60)
     
+    # Удаляем старый вебхук и устанавливаем новый
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
-        print("✅ Webhook установлен")
+        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        print(f"Удаление вебхука: {resp.status_code}")
+        
+        resp = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            json={"url": f"{RAILWAY_URL}/telegram_webhook"}
+        )
+        print(f"Установка вебхука: {resp.status_code} - {resp.text}")
+        
+        if resp.status_code == 200 and resp.json().get('ok'):
+            print("✅ Вебхук успешно установлен!")
+        else:
+            print("⚠️ Ошибка установки вебхука, но бот может работать через polling...")
+            
     except Exception as e:
         print(f"⚠️ Ошибка: {e}")
     
+    # Запускаем Flask
     app.run(host='0.0.0.0', port=5000)
