@@ -4,6 +4,7 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from database import Database
 import requests
 import json
+import traceback
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -163,67 +164,89 @@ def choose_vip(call: CallbackQuery):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def process_buy(call: CallbackQuery):
-    _, sub_type, duration = call.data.split("_")
-    days = int(duration.replace("day", ""))
-    prices = {"lite_1day": 140, "lite_7day": 700, "vip_1day": 270, "vip_7day": 1200, "vip_14day": 2200}
-    amount = prices.get(f"{sub_type}_{duration}")
-    
-    user_id = call.from_user.id
-    payload = f"user_{user_id}_{sub_type}_{duration}"
-    
-    headers = {
-        "Content-Type": "application/json",
-        "X-MerchantId": MERCHANT_ID,
-        "X-Secret": API_SECRET
-    }
-    
-    payment_data = {
-        "paymentDetails": {
-            "amount": float(amount),
-            "currency": "RUB"
-        },
-        "description": f"Подписка {sub_type.upper()} на {days} дней",
-        "return": "https://t.me/KeeperMag_bot",
-        "failedUrl": "https://t.me/KeeperMag_bot",
-        "payload": payload
-    }
-    
     try:
-        # Пробуем оба возможных эндпоинта
-        response = requests.post(f"{PLATEGA_API_URL}/v2/transaction/process", headers=headers, json=payment_data, timeout=30)
+        _, sub_type, duration = call.data.split("_")
+        days = int(duration.replace("day", ""))
+        prices = {"lite_1day": 140, "lite_7day": 700, "vip_1day": 270, "vip_7day": 1200, "vip_14day": 2200}
+        amount = prices.get(f"{sub_type}_{duration}")
         
-        if response.status_code != 200:
-            response = requests.post(f"{PLATEGA_API_URL}/transaction/process", headers=headers, json=payment_data, timeout=30)
+        user_id = call.from_user.id
+        payload = f"user_{user_id}_{sub_type}_{duration}"
         
-        print(f"Статус Platega: {response.status_code}")
-        print(f"Ответ: {response.text}")
+        headers = {
+            "Content-Type": "application/json",
+            "X-MerchantId": MERCHANT_ID,
+            "X-Secret": API_SECRET
+        }
+        
+        payment_data = {
+            "paymentDetails": {
+                "amount": float(amount),
+                "currency": "RUB"
+            },
+            "description": f"Подписка {sub_type.upper()} на {days} дней",
+            "return": "https://t.me/KeeperMag_bot",
+            "failedUrl": "https://t.me/KeeperMag_bot",
+            "payload": payload
+        }
+        
+        # Отправляем запрос к Platega
+        response = requests.post(
+            f"{PLATEGA_API_URL}/v2/transaction/process",
+            headers=headers,
+            json=payment_data,
+            timeout=30
+        )
+        
+        # Детальное логирование в консоль Railway
+        print("=" * 50)
+        print(f"ЗАПРОС К PLATEGA:")
+        print(f"URL: {PLATEGA_API_URL}/v2/transaction/process")
+        print(f"HEADERS: {headers}")
+        print(f"PAYLOAD: {json.dumps(payment_data, indent=2)}")
+        print(f"ОТВЕТ КОД: {response.status_code}")
+        print(f"ОТВЕТ ТЕЛО: {response.text}")
+        print("=" * 50)
         
         if response.status_code == 200:
             result = response.json()
             payment_url = result.get("redirect") or result.get("payment_url")
             transaction_id = result.get("transactionId") or result.get("id")
             
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
-            markup.add(InlineKeyboardButton("🔄 Проверить статус", callback_data=f"check_{transaction_id}"))
-            
-            bot.edit_message_text(
-                f"💳 **Счет на оплату**\n\n"
-                f"💰 Сумма: {amount}₽\n"
-                f"📦 Подписка: {sub_type.upper()} {days} д.\n\n"
-                f"👇 Нажмите для оплаты",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=markup
-            )
+            if payment_url and transaction_id:
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
+                markup.add(InlineKeyboardButton("🔄 Проверить статус", callback_data=f"check_{transaction_id}"))
+                
+                bot.edit_message_text(
+                    f"💳 **Счет на оплату**\n\n"
+                    f"💰 Сумма: {amount}₽\n"
+                    f"📦 Подписка: {sub_type.upper()} {days} д.\n\n"
+                    f"👇 Нажмите для оплаты",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=markup
+                )
+            else:
+                bot.edit_message_text(
+                    f"❌ Ошибка: Не получен URL оплаты\nОтвет: {response.text[:200]}",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
         else:
-            bot.edit_message_text(
-                f"❌ Ошибка создания платежа\nКод: {response.status_code}\n{response.text[:200]}",
-                call.message.chat.id,
-                call.message.message_id
-            )
+            # Показываем подробную ошибку пользователю
+            error_msg = f"❌ Ошибка создания платежа\n\nКод: {response.status_code}\n\nДля техподдержки:\n```\n{response.text[:300]}\n```"
+            bot.edit_message_text(error_msg, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", call.message.chat.id, call.message.message_id)
+        error_details = traceback.format_exc()
+        print(f"ИСКЛЮЧЕНИЕ: {error_details}")
+        bot.edit_message_text(
+            f"❌ Критическая ошибка:\n```\n{str(e)[:200]}\n```\nОбратитесь к @nikita1055",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="Markdown"
+        )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
 def check_payment(call: CallbackQuery):
@@ -236,6 +259,8 @@ def check_payment(call: CallbackQuery):
     try:
         response = requests.get(f"{PLATEGA_API_URL}/transaction/{transaction_id}", headers=headers, timeout=30)
         
+        print(f"ПРОВЕРКА ПЛАТЕЖА: {transaction_id} -> {response.status_code} {response.text}")
+        
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "CONFIRMED":
@@ -244,9 +269,10 @@ def check_payment(call: CallbackQuery):
             else:
                 bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка проверки")
-    except:
-        bot.answer_callback_query(call.id, "❌ Ошибка")
+            bot.answer_callback_query(call.id, f"❌ Ошибка: {response.status_code}", show_alert=True)
+    except Exception as e:
+        print(f"Ошибка проверки: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка соединения", show_alert=True)
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
 def info_menu(message: Message):
@@ -263,7 +289,8 @@ def info_menu(message: Message):
         f"• Отзывы: {REVIEWS_CHANNEL}\n\n"
         "⚖️ **ДОКУМЕНТЫ:**\n"
         "• Политика конфиденциальности\n"
-        "• Пользовательское соглашение"
+        "• Пользовательское соглашение\n\n"
+        "📄 Нажмите на кнопки ниже для просмотра"
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
 
@@ -336,14 +363,14 @@ def telegram_webhook():
         bot.process_new_updates([update])
         return "OK", 200
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка вебхука Telegram: {e}")
         return "Error", 200
 
 @app.route('/webhook', methods=['POST'])
 def platega_webhook():
     try:
         data = request.json
-        print(f"Получен вебхук: {json.dumps(data, indent=2)}")
+        print(f"📡 Получен вебхук от Platega: {json.dumps(data, indent=2)}")
         status = data.get('status')
         payload = data.get('payload')
         
@@ -360,21 +387,27 @@ def platega_webhook():
                     pass
         return jsonify({"status": "ok"}), 200
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка вебхука Platega: {e}")
         return jsonify({"status": "error"}), 500
 
 # ============================================
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
-        print(f"✅ Webhook установлен: {RAILWAY_URL}/telegram_webhook")
-    except Exception as e:
-        print(f"⚠️ Ошибка: {e}")
-    
-    print(f"🚀 БОТ ЗАПУЩЕН!")
-    print(f"📡 Callback URL для Platega: {RAILWAY_URL}/webhook")
+    print("=" * 60)
+    print("🚀 ЗАПУСК БОТА")
     print(f"🤖 Бот: @KeeperMag_bot")
+    print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
+    print("=" * 60)
+    
+    # Устанавливаем вебхук Telegram
+    try:
+        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        print(f"Удаление вебхука: {resp.status_code}")
+        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
+        print(f"Установка вебхука: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"Ошибка установки вебхука: {e}")
+    
+    print("✅ Бот готов к работе!")
     app.run(host='0.0.0.0', port=5000)
