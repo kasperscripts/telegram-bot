@@ -475,4 +475,305 @@ def add_keys_batch(message: Message):
         "`+l1d` - LITE 1 день\n"
         "`+l7d` - LITE 7 дней\n"
         "`+v1d` - VIP 1 день\n"
-        "`+v7d` - VIP 7 дн
+        "`+v7d` - VIP 7 дней\n"
+        "`+v14d` - VIP 14 дней\n\n"
+        "Затем с новой строки каждый ключ:\n\n"
+        "Пример:\n"
+        "`+v1d`\n"
+        "`KEY1`\n"
+        "`KEY2`\n"
+        "`KEY3`\n\n"
+        "Или добавьте ключи разных типов:\n"
+        "`+l7d`\n"
+        "`KEY1`\n"
+        "`KEY2`\n"
+        "`+v14d`\n"
+        "`KEY3`\n"
+        "`KEY4`"
+    )
+    msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_add_keys)
+
+def process_add_keys(message: Message):
+    lines = message.text.strip().split('\n')
+    current_type = None
+    current_days = None
+    added = 0
+    errors = []
+    
+    type_map = {
+        "+l1d": ("lite", 1),
+        "+l7d": ("lite", 7),
+        "+v1d": ("vip", 1),
+        "+v7d": ("vip", 7),
+        "+v14d": ("vip", 14)
+    }
+    
+    for line in lines:
+        line = line.strip().lower()
+        if line in type_map:
+            current_type, current_days = type_map[line]
+            continue
+        
+        if line and current_type:
+            if db.add_key(line, current_type, current_days):
+                added += 1
+            else:
+                errors.append(line)
+    
+    result = f"✅ **Добавлено ключей: {added}**"
+    if errors:
+        result += f"\n\n⚠️ Ошибки при добавлении {len(errors)} ключей:\n`" + "\n".join(errors[:5]) + "`"
+    
+    bot.send_message(message.chat.id, result, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "🗑 Удалить ключи (массово)" and is_admin(message.from_user.id))
+def delete_keys_batch(message: Message):
+    text = (
+        "🗑 **Массовое удаление ключей**\n\n"
+        "Отправьте ключи в формате:\n\n"
+        "`-l1d` - удалить все неиспользованные LITE 1 день\n"
+        "`-l7d` - удалить все неиспользованные LITE 7 дней\n"
+        "`-v1d` - удалить все неиспользованные VIP 1 день\n"
+        "`-v7d` - удалить все неиспользованные VIP 7 дней\n"
+        "`-v14d` - удалить все неиспользованные VIP 14 дней\n\n"
+        "Или удалите конкретные ключи:\n"
+        "`-l1d`\n"
+        "`KEY1`\n"
+        "`KEY2`\n"
+        "`KEY3`\n\n"
+        "Для удаления ключей по типу напишите только команду (например `-l1d`)"
+    )
+    msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_delete_keys)
+
+def process_delete_keys(message: Message):
+    lines = message.text.strip().split('\n')
+    current_type = None
+    current_days = None
+    deleted = 0
+    errors = []
+    keys_to_delete = []
+    
+    type_map = {
+        "-l1d": ("lite", 1),
+        "-l7d": ("lite", 7),
+        "-v1d": ("vip", 1),
+        "-v7d": ("vip", 7),
+        "-v14d": ("vip", 14)
+    }
+    
+    for line in lines:
+        line = line.strip().lower()
+        if line in type_map:
+            current_type, current_days = type_map[line]
+            # Если это единственная команда - удаляем ВСЕ ключи этого типа
+            if len(lines) == 1:
+                all_keys = db.get_all_keys()
+                for key in all_keys:
+                    if key[2] == current_type and key[3] == current_days and key[4] == 0:
+                        db.delete_key(key[0])
+                        deleted += 1
+                bot.send_message(message.chat.id, f"✅ **Удалено ключей типа {current_type.upper()} {current_days}д: {deleted}**", parse_mode="Markdown")
+                return
+            continue
+        
+        if line and current_type:
+            keys_to_delete.append(line)
+    
+    # Удаляем конкретные ключи
+    all_keys = db.get_all_keys()
+    for key in all_keys:
+        if key[1] in keys_to_delete and key[4] == 0:
+            db.delete_key(key[0])
+            deleted += 1
+            keys_to_delete.remove(key[1])
+    
+    if keys_to_delete:
+        errors = keys_to_delete
+    
+    result = f"✅ **Удалено ключей: {deleted}**"
+    if errors:
+        result += f"\n\n⚠️ Не найдены ключи ({len(errors)}):\n`" + "\n".join(errors[:5]) + "`"
+    
+    bot.send_message(message.chat.id, result, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "💰 Изменить цены" and is_admin(message.from_user.id))
+def change_prices_menu(message: Message):
+    text = "💰 **Текущие цены:**\n\n"
+    text += f"• LITE 1 день: {PRICES['lite_1day']}₽\n"
+    text += f"• LITE 7 дней: {PRICES['lite_7day']}₽\n"
+    text += f"• VIP 1 день: {PRICES['vip_1day']}₽\n"
+    text += f"• VIP 7 дней: {PRICES['vip_7day']}₽\n"
+    text += f"• VIP 14 дней: {PRICES['vip_14day']}₽\n\n"
+    text += "**Изменить цену:**\nОтправьте: `lite_1day 150`"
+    
+    msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    bot.register_next_step_handler(msg, update_price)
+
+def update_price(message: Message):
+    try:
+        text = message.text.strip()
+        if ' ' in text:
+            key, new_price = text.split(' ')
+        elif ':' in text:
+            key, new_price = text.split(':')
+        else:
+            bot.send_message(message.chat.id, "❌ Неверный формат! Используйте: `lite_1day 150`", parse_mode="Markdown")
+            return
+        
+        new_price = int(new_price)
+        if key in PRICES:
+            PRICES[key] = new_price
+            set_price(key, new_price)
+            bot.send_message(message.chat.id, f"✅ Цена {key} изменена на {new_price}₽", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, f"❌ Неверный ключ!", parse_mode="Markdown")
+    except:
+        bot.send_message(message.chat.id, "❌ Ошибка! Пример: `lite_1day 150`", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "📋 Список ключей" and is_admin(message.from_user.id))
+def list_keys(message: Message):
+    keys = db.get_all_keys()
+    if not keys:
+        bot.send_message(message.chat.id, "📭 **Нет ключей**", parse_mode="Markdown")
+        return
+    
+    text = "🔑 **СПИСОК КЛЮЧЕЙ:**\n\n"
+    for key in keys[-50:]:
+        _, key_code, sub_type, days, is_used, used_by = key
+        status = "✅ АКТИВЕН" if not is_used else f"❌ ИСПОЛЬЗОВАН (пользователь {used_by})"
+        text += f"`{key_code}` - {sub_type.upper()} {days}д. - {status}\n"
+    
+    # Отправляем по частям если текст длинный
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            bot.send_message(message.chat.id, text[i:i+4000], parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "📊 Статистика" and is_admin(message.from_user.id))
+def show_stats(message: Message):
+    stats = db.get_stats()
+    
+    # Дополнительная статистика по платежам
+    try:
+        cursor = db.connection.cursor()
+        
+        # Сумма всех успешных платежей
+        cursor.execute("SELECT SUM(amount) FROM payments WHERE status = 'confirmed'")
+        total_income = cursor.fetchone()[0] or 0
+        
+        # Количество успешных платежей
+        cursor.execute("SELECT COUNT(*) FROM payments WHERE status = 'confirmed'")
+        total_success = cursor.fetchone()[0] or 0
+        
+        # Количество платежей в ожидании
+        cursor.execute("SELECT COUNT(*) FROM payments WHERE status = 'pending'")
+        total_pending = cursor.fetchone()[0] or 0
+        
+        # Количество отмененных/ошибочных платежей
+        cursor.execute("SELECT COUNT(*) FROM payments WHERE status = 'cancelled' OR status = 'error'")
+        total_failed = cursor.fetchone()[0] or 0
+        
+        # Средний чек
+        avg_check = total_income / total_success if total_success > 0 else 0
+        
+        text = (
+            f"📊 **СТАТИСТИКА ПЛАТЕЖЕЙ**\n\n"
+            f"💰 **Общий доход:** {total_income}₽\n"
+            f"✅ **Успешных платежей:** {total_success}\n"
+            f"⏳ **В ожидании:** {total_pending}\n"
+            f"❌ **Отклонено/Ошибок:** {total_failed}\n"
+            f"📊 **Средний чек:** {avg_check:.2f}₽\n\n"
+            f"📈 **ОБЩАЯ СТАТИСТИКА БОТА**\n\n"
+            f"👥 **Пользователей:** {stats['total_users']}\n"
+            f"✅ **Активных подписок:** {stats['active_subs']}\n"
+            f"🔑 **Доступных ключей:** {stats['unused_keys']}"
+        )
+    except:
+        text = (
+            f"📊 **СТАТИСТИКА**\n\n"
+            f"👥 Пользователей: {stats['total_users']}\n"
+            f"✅ Активных подписок: {stats['active_subs']}\n"
+            f"💰 Доход: {stats['total_income']}₽"
+        )
+    
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "◀️ Назад в меню")
+def back_to_main(message: Message):
+    bot.send_message(message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(message.from_user.id)))
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+def back_to_menu(call: CallbackQuery):
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.send_message(call.message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(call.from_user.id)))
+
+# ============================================
+# FLASK ПРИЛОЖЕНИЕ
+# ============================================
+@app.route('/', methods=['GET'])
+def index():
+    return "Бот работает!", 200
+
+@app.route('/telegram_webhook', methods=['POST'])
+def telegram_webhook():
+    try:
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        return "Error", 200
+
+@app.route('/webhook', methods=['POST'])
+def platega_webhook():
+    try:
+        data = request.json
+        print(f"📡 Вебхук Platega: {json.dumps(data, indent=2)}")
+        status = data.get('status')
+        payload = data.get('payload')
+        
+        if status == "CONFIRMED" and payload:
+            if payload.startswith('donate'):
+                # Донат
+                print(f"💰 Получен донат: {payload}")
+            elif payload.startswith('user'):
+                # Оплата подписки
+                parts = payload.split('_')
+                if len(parts) >= 5:
+                    user_id = int(parts[1])
+                    sub_type = parts[2]
+                    days = int(parts[3].replace('day', ''))
+                    key = parts[4]
+                    
+                    db.activate_subscription(user_id, sub_type, days)
+                    try:
+                        bot.send_message(user_id, f"✅ **Оплата подтверждена!**\n\n🔑 Ваш ключ:\n`{key}`\n\n📦 Подписка: {sub_type.upper()} {days} д.\n\nСохраните ключ!", parse_mode="Markdown")
+                    except:
+                        pass
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        return jsonify({"status": "error"}), 500
+
+# ============================================
+# ЗАПУСК
+# ============================================
+if __name__ == '__main__':
+    print("=" * 60)
+    print("🚀 БОТ ЗАПУЩЕН")
+    print(f"🤖 Бот: @KeeperMag_bot")
+    print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
+    print("=" * 60)
+    
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
+        print("✅ Webhook установлен")
+    except Exception as e:
+        print(f"⚠️ Ошибка: {e}")
+    
+    app.run(host='0.0.0.0', port=5000)
