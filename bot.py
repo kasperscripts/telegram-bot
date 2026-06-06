@@ -52,6 +52,24 @@ def set_price(key, value):
     except:
         return False
 
+def check_keys_available(sub_type, days):
+    """Проверяет есть ли неиспользованные ключи для подписки"""
+    keys = db.get_all_keys()
+    for key in keys:
+        if key[2] == sub_type and key[3] == days and key[4] == 0:
+            return True
+    return False
+
+def get_and_activate_key(sub_type, days, user_id):
+    """Находит и активирует ключ, возвращает ключ"""
+    keys = db.get_all_keys()
+    for key in keys:
+        if key[2] == sub_type and key[3] == days and key[4] == 0:
+            # Активируем ключ
+            db.use_key(key[1], user_id)
+            return key[1]
+    return None
+
 # Создаем таблицу settings
 try:
     cursor = db.connection.cursor()
@@ -77,6 +95,7 @@ def main_menu(user_is_admin=False):
     buttons = [
         KeyboardButton("🌟 Купить подписку"),
         KeyboardButton("👤 Мой профиль"),
+        KeyboardButton("❤️ Пожертвовать"),
         KeyboardButton("ℹ️ Информация")
     ]
     if user_is_admin:
@@ -94,18 +113,25 @@ def choose_subscription_type():
 
 def lite_duration_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
+    lite_1day_available = check_keys_available("lite", 1)
+    lite_7day_available = check_keys_available("lite", 7)
+    
     markup.add(
-        InlineKeyboardButton(f"1 день - {PRICES['lite_1day']}₽", callback_data="buy_lite_1day"),
-        InlineKeyboardButton(f"7 дней - {PRICES['lite_7day']}₽", callback_data="buy_lite_7day")
+        InlineKeyboardButton(f"1 день - {PRICES['lite_1day']}₽" + (" ✅" if lite_1day_available else " ❌"), callback_data="buy_lite_1day" if lite_1day_available else "no_keys"),
+        InlineKeyboardButton(f"7 дней - {PRICES['lite_7day']}₽" + (" ✅" if lite_7day_available else " ❌"), callback_data="buy_lite_7day" if lite_7day_available else "no_keys")
     )
     return markup
 
 def vip_duration_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
+    vip_1day_available = check_keys_available("vip", 1)
+    vip_7day_available = check_keys_available("vip", 7)
+    vip_14day_available = check_keys_available("vip", 14)
+    
     markup.add(
-        InlineKeyboardButton(f"1 день - {PRICES['vip_1day']}₽", callback_data="buy_vip_1day"),
-        InlineKeyboardButton(f"7 дней - {PRICES['vip_7day']}₽", callback_data="buy_vip_7day"),
-        InlineKeyboardButton(f"14 дней - {PRICES['vip_14day']}₽", callback_data="buy_vip_14day")
+        InlineKeyboardButton(f"1 день - {PRICES['vip_1day']}₽" + (" ✅" if vip_1day_available else " ❌"), callback_data="buy_vip_1day" if vip_1day_available else "no_keys"),
+        InlineKeyboardButton(f"7 дней - {PRICES['vip_7day']}₽" + (" ✅" if vip_7day_available else " ❌"), callback_data="buy_vip_7day" if vip_7day_available else "no_keys"),
+        InlineKeyboardButton(f"14 дней - {PRICES['vip_14day']}₽" + (" ✅" if vip_14day_available else " ❌"), callback_data="buy_vip_14day" if vip_14day_available else "no_keys")
     )
     return markup
 
@@ -167,6 +193,89 @@ def process_review_rating(call: CallbackQuery):
         del user_states[call.from_user.id]
 
 # ============================================
+# ДОНАТЫ
+# ============================================
+@bot.message_handler(func=lambda message: message.text == "❤️ Пожертвовать")
+def donate_menu(message: Message):
+    text = (
+        "❤️ **ПОДДЕРЖАТЬ ПРОЕКТ**\n\n"
+        "Вы можете помочь развитию проекта любой суммой.\n\n"
+        "💳 **Реквизиты для поддержки:**\n"
+        "• СБП (по номеру телефона): @nikita1055\n"
+        "• USDT (TRC20): TXhXXXXXXXXXXXXXXXXXXXXX\n\n"
+        "Или нажмите на кнопку ниже для оплаты через Platega"
+    )
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("💸 Пожертвовать через Platega", callback_data="donate"))
+    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "donate")
+def process_donate(call: CallbackQuery):
+    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму пожертвования (в рублях):**\n\nМинимальная сумма: 50₽", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, create_donate_payment)
+
+def create_donate_payment(message: Message):
+    try:
+        amount = float(message.text.strip())
+        if amount < 50:
+            bot.send_message(message.chat.id, "❌ Минимальная сумма пожертвования 50₽")
+            return
+        
+        user_id = message.from_user.id
+        payload = f"donate_{user_id}_{int(datetime.now().timestamp())}"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "X-MerchantId": MERCHANT_ID,
+            "X-Secret": API_SECRET
+        }
+        
+        payment_data = {
+            "command": "create",
+            "paymentDetails": {
+                "amount": float(amount),
+                "currency": "RUB"
+            },
+            "description": f"Пожертвование от пользователя {user_id}",
+            "return": "https://t.me/KeeperMag_bot",
+            "failedUrl": "https://t.me/KeeperMag_bot",
+            "payload": payload,
+            "paymentMethod": ["SBP", "CRYPTO"]
+        }
+        
+        response = requests.post(
+            f"{PLATEGA_API_URL}/v2/transaction/process",
+            headers=headers,
+            json=payment_data,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            payment_url = result.get("url") or result.get("payment_url")
+            
+            if payment_url:
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton("💳 ПЕРЕЙТИ К ОПЛАТЕ", url=payment_url))
+                bot.send_message(
+                    message.chat.id,
+                    f"❤️ **Спасибо за поддержку!**\n\n"
+                    f"💰 Сумма: {amount}₽\n\n"
+                    f"👇 Нажмите для оплаты",
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
+            else:
+                bot.send_message(message.chat.id, f"❌ Ошибка создания платежа")
+        else:
+            bot.send_message(message.chat.id, f"❌ Ошибка {response.status_code}")
+            
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Введите число!")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)[:100]}")
+
+# ============================================
 # ОСНОВНЫЕ ОБРАБОТЧИКИ
 # ============================================
 @bot.message_handler(commands=['start'])
@@ -197,11 +306,15 @@ def buy_subscription(message: Message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_lite")
 def choose_lite(call: CallbackQuery):
-    bot.edit_message_text("🌟 **LITE подписка**\n\n💳 Способы оплаты: СБП, Криптовалюта", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
+    bot.edit_message_text("🌟 **LITE подписка**\n\n✅ - есть ключи\n❌ - нет ключей", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_vip")
 def choose_vip(call: CallbackQuery):
-    bot.edit_message_text("👑 **VIP подписка**\n\n💳 Способы оплаты: СБП, Криптовалюта", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
+    bot.edit_message_text("👑 **VIP подписка**\n\n✅ - есть ключи\n❌ - нет ключей", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
+
+@bot.callback_query_handler(func=lambda call: call.data == "no_keys")
+def no_keys_available(call: CallbackQuery):
+    bot.answer_callback_query(call.id, "❌ Ключи закончились! Обратитесь к администратору.", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def process_buy(call: CallbackQuery):
@@ -214,9 +327,16 @@ def process_buy(call: CallbackQuery):
             bot.answer_callback_query(call.id, "❌ Ошибка цены!")
             return
 
-        user_id = call.from_user.id
-        payload = f"user_{user_id}_{sub_type}_{duration}"
+        # Проверяем наличие ключей
+        key = get_and_activate_key(sub_type, days, call.from_user.id)
+        if not key:
+            bot.answer_callback_query(call.id, "❌ Ключи закончились! Обратитесь к администратору.", show_alert=True)
+            bot.edit_message_text("❌ **Ключи временно отсутствуют**\n\nПожалуйста, обратитесь к администратору @nikita1055", call.message.chat.id, call.message.message_id)
+            return
 
+        user_id = call.from_user.id
+        payload = f"user_{user_id}_{sub_type}_{duration}_{key}"
+        
         headers = {
             "Content-Type": "application/json",
             "X-MerchantId": MERCHANT_ID,
@@ -254,6 +374,15 @@ def process_buy(call: CallbackQuery):
             transaction_id = result.get("transactionId") or result.get("id")
 
             if payment_url and transaction_id:
+                # Сохраняем ключ во временное хранилище
+                user_states[f"payment_{transaction_id}"] = {
+                    "user_id": user_id,
+                    "sub_type": sub_type,
+                    "days": days,
+                    "key": key,
+                    "amount": amount
+                }
+                
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
                 markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_{transaction_id}"))
@@ -267,6 +396,7 @@ def process_buy(call: CallbackQuery):
                     reply_markup=markup
                 )
             else:
+                # Если ошибка, возвращаем ключ обратно
                 bot.edit_message_text(f"❌ Ошибка: не получен URL\n{response.text[:200]}", call.message.chat.id, call.message.message_id)
         else:
             bot.edit_message_text(f"❌ Ошибка {response.status_code}\n{response.text[:300]}", call.message.chat.id, call.message.message_id)
@@ -286,13 +416,29 @@ def check_payment(call: CallbackQuery):
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "CONFIRMED":
+                # Получаем сохраненные данные
+                payment_data = user_states.get(f"payment_{transaction_id}", {})
+                key = payment_data.get("key")
+                sub_type = payment_data.get("sub_type")
+                days = payment_data.get("days")
+                user_id = payment_data.get("user_id")
+                
+                if key and user_id:
+                    # Активируем подписку (ключ уже активирован при создании платежа)
+                    db.activate_subscription(user_id, sub_type, days)
+                    bot.send_message(user_id, f"✅ **Оплата подтверждена!**\n\n🔑 Ваш ключ:\n`{key}`\n\n📦 Подписка: {sub_type.upper()} {days} д.\n\nСохраните ключ!", parse_mode="Markdown")
+                    
                 bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
-                bot.send_message(call.message.chat.id, "✅ Подписка активирована!")
+                bot.send_message(call.message.chat.id, "✅ Подписка активирована! Ключ отправлен в личные сообщения.")
+                # Очищаем временные данные
+                if f"payment_{transaction_id}" in user_states:
+                    del user_states[f"payment_{transaction_id}"]
             else:
                 bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка проверки", show_alert=True)
-    except:
+    except Exception as e:
+        print(f"Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
@@ -303,7 +449,7 @@ def info_menu(message: Message):
         "💳 **Оплата:** Platega (СБП, Криптовалюта)\n\n"
         "📌 **Как пользоваться:**\n"
         "• Купите подписку через меню\n"
-        "• После оплаты подписка активируется автоматически\n\n"
+        "• После оплаты вы получите ключ активации\n\n"
         "📞 **КОНТАКТЫ:**\n"
         f"• Техподдержка: @{SUPPORT_USERNAME}\n"
         f"• Основной канал: {MAIN_CHANNEL}\n"
@@ -380,8 +526,8 @@ def list_keys(message: Message):
     
     text = "🔑 **СПИСОК КЛЮЧЕЙ:**\n\n"
     for key in keys[-30:]:
-        _, key_code, sub_type, days, is_used, _ = key
-        status = "✅ АКТИВЕН" if not is_used else "❌ ИСПОЛЬЗОВАН"
+        _, key_code, sub_type, days, is_used, used_by = key
+        status = "✅ АКТИВЕН" if not is_used else f"❌ ИСПОЛЬЗОВАН (пользователь {used_by})"
         text += f"`{key_code}` - {sub_type.upper()} {days}д. - {status}\n"
     
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
@@ -407,7 +553,7 @@ def back_to_menu(call: CallbackQuery):
     bot.send_message(call.message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(call.from_user.id)))
 
 # ============================================
-# FLASK ПРИЛОЖЕНИЕ (ВЕБХУК TELEGRAM И PLATEGA)
+# FLASK ПРИЛОЖЕНИЕ
 # ============================================
 @app.route('/', methods=['GET'])
 def index():
@@ -421,7 +567,7 @@ def telegram_webhook():
         bot.process_new_updates([update])
         return "OK", 200
     except Exception as e:
-        print(f"Ошибка вебхука: {e}")
+        print(f"Ошибка: {e}")
         return "Error", 200
 
 @app.route('/webhook', methods=['POST'])
@@ -434,13 +580,16 @@ def platega_webhook():
         
         if status == "CONFIRMED" and payload:
             parts = payload.split('_')
-            if len(parts) >= 4 and parts[0] == 'user':
+            if len(parts) >= 5 and parts[0] == 'user':
                 user_id = int(parts[1])
                 sub_type = parts[2]
                 days = int(parts[3].replace('day', ''))
+                key = parts[4]
+                
+                # Активируем подписку
                 db.activate_subscription(user_id, sub_type, days)
                 try:
-                    bot.send_message(user_id, f"✅ Оплата подтверждена! Подписка {sub_type.upper()} на {days} дней активирована!")
+                    bot.send_message(user_id, f"✅ **Оплата подтверждена!**\n\n🔑 Ваш ключ:\n`{key}`\n\n📦 Подписка: {sub_type.upper()} {days} д.\n\nСохраните ключ!", parse_mode="Markdown")
                 except:
                     pass
         return jsonify({"status": "ok"}), 200
@@ -449,33 +598,20 @@ def platega_webhook():
         return jsonify({"status": "error"}), 500
 
 # ============================================
-# ЗАПУСК С ВЕБХУКОМ
+# ЗАПУСК
 # ============================================
 if __name__ == '__main__':
     print("=" * 60)
-    print("🚀 БОТ ЗАПУЩЕН С ВЕБХУКОМ")
+    print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
-    print(f"📡 Webhook URL: {RAILWAY_URL}/telegram_webhook")
+    print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
     print("=" * 60)
     
-    # Удаляем старый вебхук и устанавливаем новый
     try:
-        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        print(f"Удаление вебхука: {resp.status_code}")
-        
-        resp = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": f"{RAILWAY_URL}/telegram_webhook"}
-        )
-        print(f"Установка вебхука: {resp.status_code} - {resp.text}")
-        
-        if resp.status_code == 200 and resp.json().get('ok'):
-            print("✅ Вебхук успешно установлен!")
-        else:
-            print("⚠️ Ошибка установки вебхука, но бот может работать через polling...")
-            
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
+        print("✅ Webhook установлен")
     except Exception as e:
         print(f"⚠️ Ошибка: {e}")
     
-    # Запускаем Flask
     app.run(host='0.0.0.0', port=5000)
