@@ -17,6 +17,15 @@ API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWGFWgpSXtg
 PLATEGA_API_URL = "https://app.platega.io"
 RAILWAY_URL = "https://telegram-bot-production-4bcc.up.railway.app"
 
+# Цены (можно менять через админку)
+PRICES = {
+    "lite_1day": 140,
+    "lite_7day": 700,
+    "vip_1day": 270,
+    "vip_7day": 1200,
+    "vip_14day": 2200
+}
+
 # Ссылки на документы
 PRIVACY_POLICY_URL = "https://telegra.ph/Politika-konfidencialnosti-04-01-26"
 TERMS_OF_USE_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"
@@ -55,17 +64,17 @@ def choose_subscription_type():
 def lite_duration_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("1 день - 140₽", callback_data="buy_lite_1day"),
-        InlineKeyboardButton("7 дней - 700₽", callback_data="buy_lite_7day")
+        InlineKeyboardButton(f"1 день - {PRICES['lite_1day']}₽", callback_data="buy_lite_1day"),
+        InlineKeyboardButton(f"7 дней - {PRICES['lite_7day']}₽", callback_data="buy_lite_7day")
     )
     return markup
 
 def vip_duration_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("1 день - 270₽", callback_data="buy_vip_1day"),
-        InlineKeyboardButton("7 дней - 1200₽", callback_data="buy_vip_7day"),
-        InlineKeyboardButton("14 дней - 2200₽", callback_data="buy_vip_14day")
+        InlineKeyboardButton(f"1 день - {PRICES['vip_1day']}₽", callback_data="buy_vip_1day"),
+        InlineKeyboardButton(f"7 дней - {PRICES['vip_7day']}₽", callback_data="buy_vip_7day"),
+        InlineKeyboardButton(f"14 дней - {PRICES['vip_14day']}₽", callback_data="buy_vip_14day")
     )
     return markup
 
@@ -85,6 +94,7 @@ def admin_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     buttons = [
         KeyboardButton("➕ Добавить ключи"),
+        KeyboardButton("💰 Изменить цены"),
         KeyboardButton("📋 Список ключей"),
         KeyboardButton("📊 Статистика"),
         KeyboardButton("◀️ Назад в меню")
@@ -156,19 +166,23 @@ def buy_subscription(message: Message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_lite")
 def choose_lite(call: CallbackQuery):
-    bot.edit_message_text("🌟 **LITE подписка**\n\n💰 1 день - 140₽\n💰 7 дней - 700₽\n\n💳 После оплаты подписка активируется автоматически", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
+    bot.edit_message_text("🌟 **LITE подписка**\n\n💳 Способы оплаты: СБП, Криптовалюта", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_vip")
 def choose_vip(call: CallbackQuery):
-    bot.edit_message_text("👑 **VIP подписка**\n\n💰 1 день - 270₽\n💰 7 дней - 1200₽\n💰 14 дней - 2200₽\n\n💳 После оплаты подписка активируется автоматически", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
+    bot.edit_message_text("👑 **VIP подписка**\n\n💳 Способы оплаты: СБП, Криптовалюта", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def process_buy(call: CallbackQuery):
     try:
         _, sub_type, duration = call.data.split("_")
         days = int(duration.replace("day", ""))
-        prices = {"lite_1day": 140, "lite_7day": 700, "vip_1day": 270, "vip_7day": 1200, "vip_14day": 2200}
-        amount = prices.get(f"{sub_type}_{duration}")
+        price_key = f"{sub_type}_{duration}"
+        amount = PRICES.get(price_key)
+        
+        if not amount:
+            bot.answer_callback_query(call.id, "❌ Ошибка цены!")
+            return
         
         user_id = call.from_user.id
         payload = f"user_{user_id}_{sub_type}_{duration}"
@@ -179,6 +193,7 @@ def process_buy(call: CallbackQuery):
             "X-Secret": API_SECRET
         }
         
+        # Добавляем paymentMethod (СБП и Криптовалюта)
         payment_data = {
             "paymentDetails": {
                 "amount": float(amount),
@@ -187,10 +202,10 @@ def process_buy(call: CallbackQuery):
             "description": f"Подписка {sub_type.upper()} на {days} дней",
             "return": "https://t.me/KeeperMag_bot",
             "failedUrl": "https://t.me/KeeperMag_bot",
-            "payload": payload
+            "payload": payload,
+            "paymentMethod": [2, 13]  # 2 - СБП, 13 - Криптовалюта
         }
         
-        # Отправляем запрос к Platega
         response = requests.post(
             f"{PLATEGA_API_URL}/transaction/process",
             headers=headers,
@@ -205,18 +220,16 @@ def process_buy(call: CallbackQuery):
         
         if response.status_code == 200:
             result = response.json()
-            # Правильный парсинг ответа Platega
-            payment_url = result.get("url")  # Поле называется "url", а не "redirect"
+            payment_url = result.get("url")
             transaction_id = result.get("transactionId")
             
             if payment_url and transaction_id:
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
-                markup.add(InlineKeyboardButton("🔄 Проверить статус", callback_data=f"check_{transaction_id}"))
+                markup.add(InlineKeyboardButton("🔄 Проверить", callback_data=f"check_{transaction_id}"))
                 
                 bot.edit_message_text(
-                    f"💳 **Счет на оплату**\n\n"
-                    f"💰 Сумма: {amount}₽\n"
+                    f"💳 **Счет на {amount}₽**\n\n"
                     f"📦 Подписка: {sub_type.upper()} {days} д.\n\n"
                     f"👇 Нажмите для оплаты",
                     call.message.chat.id,
@@ -224,37 +237,21 @@ def process_buy(call: CallbackQuery):
                     reply_markup=markup
                 )
             else:
-                bot.edit_message_text(
-                    f"❌ Ошибка: Не получен URL оплаты\nОтвет: {response.text[:200]}",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
+                bot.edit_message_text(f"❌ Ошибка: {response.text[:200]}", call.message.chat.id, call.message.message_id)
         else:
-            error_msg = f"❌ Ошибка создания платежа\n\nКод: {response.status_code}\n\n{response.text[:300]}"
-            bot.edit_message_text(error_msg, call.message.chat.id, call.message.message_id)
+            bot.edit_message_text(f"❌ Ошибка {response.status_code}\n{response.text[:200]}", call.message.chat.id, call.message.message_id)
             
     except Exception as e:
-        error_details = traceback.format_exc()
-        print(f"ИСКЛЮЧЕНИЕ: {error_details}")
-        bot.edit_message_text(
-            f"❌ Критическая ошибка:\n```\n{str(e)[:200]}\n```\nОбратитесь к @nikita1055",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode="Markdown"
-        )
+        print(traceback.format_exc())
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
 def check_payment(call: CallbackQuery):
     transaction_id = call.data.split("_")[1]
-    headers = {
-        "X-MerchantId": MERCHANT_ID,
-        "X-Secret": API_SECRET
-    }
+    headers = {"X-MerchantId": MERCHANT_ID, "X-Secret": API_SECRET}
     
     try:
         response = requests.get(f"{PLATEGA_API_URL}/transaction/{transaction_id}", headers=headers, timeout=30)
-        
-        print(f"ПРОВЕРКА ПЛАТЕЖА: {transaction_id} -> {response.status_code} {response.text}")
         
         if response.status_code == 200:
             data = response.json()
@@ -264,10 +261,9 @@ def check_payment(call: CallbackQuery):
             else:
                 bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
-            bot.answer_callback_query(call.id, f"❌ Ошибка: {response.status_code}", show_alert=True)
-    except Exception as e:
-        print(f"Ошибка проверки: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка соединения", show_alert=True)
+            bot.answer_callback_query(call.id, f"❌ Ошибка", show_alert=True)
+    except:
+        bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
 def info_menu(message: Message):
@@ -289,6 +285,9 @@ def info_menu(message: Message):
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
 
+# ============================================
+# АДМИН-ПАНЕЛЬ
+# ============================================
 @bot.message_handler(func=lambda message: message.text == "⚙️ Админ-панель" and is_admin(message.from_user.id))
 def admin_panel(message: Message):
     bot.send_message(message.chat.id, "⚙️ **Админ-панель**", parse_mode="Markdown", reply_markup=admin_menu())
@@ -307,6 +306,31 @@ def save_keys(message: Message):
             if db.add_key(key, sub_type, days):
                 added += 1
     bot.send_message(message.chat.id, f"✅ **Добавлено ключей: {added}**", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "💰 Изменить цены" and is_admin(message.from_user.id))
+def change_prices_menu(message: Message):
+    text = "💰 **Текущие цены:**\n\n"
+    for key, price in PRICES.items():
+        sub_type, days = key.split("_")
+        days_num = days.replace("day", "")
+        text += f"• {sub_type.upper()} {days_num} д.: {price}₽\n"
+    
+    text += "\n**Изменить цену:**\nОтправьте: `lite_1day:150`"
+    
+    msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    bot.register_next_step_handler(msg, update_price)
+
+def update_price(message: Message):
+    try:
+        key, new_price = message.text.split(":")
+        new_price = int(new_price)
+        if key in PRICES:
+            PRICES[key] = new_price
+            bot.send_message(message.chat.id, f"✅ **Цена {key} изменена на {new_price}₽**", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, "❌ **Неверный ключ!** Доступны: lite_1day, lite_7day, vip_1day, vip_7day, vip_14day", parse_mode="Markdown")
+    except:
+        bot.send_message(message.chat.id, "❌ **Неверный формат!**\nПример: `lite_1day:150`", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📋 Список ключей" and is_admin(message.from_user.id))
 def list_keys(message: Message):
@@ -365,7 +389,7 @@ def telegram_webhook():
 def platega_webhook():
     try:
         data = request.json
-        print(f"📡 Получен вебхук: {json.dumps(data, indent=2)}")
+        print(f"📡 Вебхук: {json.dumps(data, indent=2)}")
         status = data.get('status')
         payload = data.get('payload')
         
@@ -390,19 +414,15 @@ def platega_webhook():
 # ============================================
 if __name__ == '__main__':
     print("=" * 60)
-    print("🚀 ЗАПУСК БОТА")
+    print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
     print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
     print("=" * 60)
     
-    # Устанавливаем вебхук Telegram
     try:
-        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        print(f"Удаление вебхука: {resp.status_code}")
-        resp = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
-        print(f"Установка вебхука: {resp.status_code} - {resp.text}")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
     except Exception as e:
         print(f"Ошибка: {e}")
     
-    print("✅ Бот готов к работе!")
     app.run(host='0.0.0.0', port=5000)
