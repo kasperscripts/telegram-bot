@@ -6,11 +6,11 @@ import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 
-BOT_TOKEN = "8664140220:AAH9fRMhiDj6USmjG005FNglEBGhVSQamgw"
+BOT_TOKEN = "8664140220:AAGDF8R4pQM31nd_ZMOFgCK69MMReNxWEOA"
 MERCHANT_ID = "709e8d20-e5f9-4ad0-8bae-311460ff7991"
 API_SECRET = "YZwWK4Kqpaaqhb8R5yxcOLKzUoljHmFABf3arpCTSColGlHIuYkVnP9BrHxulkDZJRh33ApHMCxlxbQHLBFmKIQJ8hBiQVxvj4uM"
 PLATEGA_API_URL = "https://app.platega.io"
-RAILWAY_URL = "https://telegram-bot-production-2773.up.railway.app"
+RAILWAY_URL = "https://telegram-bot-production-4bcc.up.railway.app"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 db = Database()
