@@ -345,14 +345,24 @@ def change_prices_menu(message: Message):
     text += f"• VIP 1 день: {PRICES['vip_1day']}₽\n"
     text += f"• VIP 7 дней: {PRICES['vip_7day']}₽\n"
     text += f"• VIP 14 дней: {PRICES['vip_14day']}₽\n\n"
-    text += "**Изменить цену:**\nОтправьте:\n`lite_1day:150`\n`vip_7day:1300`"
+    text += "**Изменить цену:**\nОтправьте в ответ на это сообщение:\n`lite_1day 150`\n`vip_7day 1300`\n\n(через пробел)"
     
     msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
     bot.register_next_step_handler(msg, update_price)
 
 def update_price(message: Message):
     try:
-        key, new_price = message.text.split(":")
+        text = message.text.strip()
+        
+        # Разделяем по пробелу или двоеточию
+        if ' ' in text:
+            key, new_price = text.split(' ')
+        elif ':' in text:
+            key, new_price = text.split(':')
+        else:
+            bot.send_message(message.chat.id, "❌ **Неверный формат!**\nИспользуйте: `lite_1day 150` или `lite_1day:150`", parse_mode="Markdown")
+            return
+        
         new_price = int(new_price)
         
         if key in PRICES:
@@ -360,9 +370,12 @@ def update_price(message: Message):
             set_price(key, new_price)
             bot.send_message(message.chat.id, f"✅ **Цена {key} изменена на {new_price}₽**", parse_mode="Markdown")
         else:
-            bot.send_message(message.chat.id, "❌ **Неверный ключ!**\nДоступны: lite_1day, lite_7day, vip_1day, vip_7day, vip_14day", parse_mode="Markdown")
-    except:
-        bot.send_message(message.chat.id, "❌ **Неверный формат!**\nПример: `lite_1day:150`", parse_mode="Markdown")
+            bot.send_message(message.chat.id, f"❌ **Неверный ключ!**\nДоступны: lite_1day, lite_7day, vip_1day, vip_7day, vip_14day", parse_mode="Markdown")
+            
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ **Цена должна быть числом!**\nПример: `lite_1day 150`", parse_mode="Markdown")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ **Ошибка:** {str(e)[:100]}", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📋 Список ключей" and is_admin(message.from_user.id))
 def list_keys(message: Message):
