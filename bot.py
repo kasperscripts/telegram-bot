@@ -17,15 +17,6 @@ API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWGFWgpSXtg
 PLATEGA_API_URL = "https://app.platega.io"
 RAILWAY_URL = "https://telegram-bot-production-4bcc.up.railway.app"
 
-# Цены (можно менять через админку)
-PRICES = {
-    "lite_1day": 140,
-    "lite_7day": 700,
-    "vip_1day": 270,
-    "vip_7day": 1200,
-    "vip_14day": 2200
-}
-
 # Ссылки на документы
 PRIVACY_POLICY_URL = "https://telegra.ph/Politika-konfidencialnosti-04-01-26"
 TERMS_OF_USE_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"
@@ -37,6 +28,46 @@ bot = telebot.TeleBot(BOT_TOKEN)
 db = Database()
 user_states = {}
 app = Flask(__name__)
+
+# ============================================
+# ФУНКЦИИ ДЛЯ РАБОТЫ С ЦЕНАМИ В БД
+# ============================================
+def get_price(key, default):
+    try:
+        cursor = db.connection.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (f"price_{key}",))
+        result = cursor.fetchone()
+        if result:
+            return int(result[0])
+    except:
+        pass
+    return default
+
+def set_price(key, value):
+    try:
+        cursor = db.connection.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (f"price_{key}", str(value)))
+        db.connection.commit()
+        return True
+    except:
+        return False
+
+# Создаем таблицу settings если её нет
+try:
+    cursor = db.connection.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    db.connection.commit()
+except:
+    pass
+
+# Загружаем цены из БД
+PRICES = {
+    "lite_1day": get_price("lite_1day", 140),
+    "lite_7day": get_price("lite_7day", 700),
+    "vip_1day": get_price("vip_1day", 270),
+    "vip_7day": get_price("vip_7day", 1200),
+    "vip_14day": get_price("vip_14day", 2200)
+}
 
 # ============================================
 # КЛАВИАТУРЫ
@@ -192,7 +223,6 @@ def process_buy(call: CallbackQuery):
             "X-Secret": API_SECRET
         }
 
-        # ПРАВИЛЬНЫЙ PAYLOAD ДЛЯ PLATEGA
         payment_data = {
             "command": "create",
             "paymentDetails": {
@@ -248,10 +278,7 @@ def process_buy(call: CallbackQuery):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
 def check_payment(call: CallbackQuery):
     transaction_id = call.data.split("_")[1]
-    headers = {
-        "X-MerchantId": MERCHANT_ID,
-        "X-Secret": API_SECRET
-    }
+    headers = {"X-MerchantId": MERCHANT_ID, "X-Secret": API_SECRET}
     
     try:
         response = requests.get(f"{PLATEGA_API_URL}/transaction/{transaction_id}", headers=headers, timeout=30)
@@ -265,7 +292,7 @@ def check_payment(call: CallbackQuery):
                 bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка проверки", show_alert=True)
-    except Exception as e:
+    except:
         bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
@@ -313,12 +340,12 @@ def save_keys(message: Message):
 @bot.message_handler(func=lambda message: message.text == "💰 Изменить цены" and is_admin(message.from_user.id))
 def change_prices_menu(message: Message):
     text = "💰 **Текущие цены:**\n\n"
-    for key, price in PRICES.items():
-        sub_type, days = key.split("_")
-        days_num = days.replace("day", "")
-        text += f"• {sub_type.upper()} {days_num} д.: {price}₽\n"
-    
-    text += "\n**Изменить цену:**\nОтправьте: `lite_1day:150`"
+    text += f"• LITE 1 день: {PRICES['lite_1day']}₽\n"
+    text += f"• LITE 7 дней: {PRICES['lite_7day']}₽\n"
+    text += f"• VIP 1 день: {PRICES['vip_1day']}₽\n"
+    text += f"• VIP 7 дней: {PRICES['vip_7day']}₽\n"
+    text += f"• VIP 14 дней: {PRICES['vip_14day']}₽\n\n"
+    text += "**Изменить цену:**\nОтправьте:\n`lite_1day:150`\n`vip_7day:1300`"
     
     msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
     bot.register_next_step_handler(msg, update_price)
@@ -327,11 +354,13 @@ def update_price(message: Message):
     try:
         key, new_price = message.text.split(":")
         new_price = int(new_price)
+        
         if key in PRICES:
             PRICES[key] = new_price
+            set_price(key, new_price)
             bot.send_message(message.chat.id, f"✅ **Цена {key} изменена на {new_price}₽**", parse_mode="Markdown")
         else:
-            bot.send_message(message.chat.id, "❌ **Неверный ключ!**", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ **Неверный ключ!**\nДоступны: lite_1day, lite_7day, vip_1day, vip_7day, vip_14day", parse_mode="Markdown")
     except:
         bot.send_message(message.chat.id, "❌ **Неверный формат!**\nПример: `lite_1day:150`", parse_mode="Markdown")
 
