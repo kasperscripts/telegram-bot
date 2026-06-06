@@ -177,24 +177,24 @@ def process_buy(call: CallbackQuery):
     try:
         _, sub_type, duration = call.data.split("_")
         days = int(duration.replace("day", ""))
-        price_key = f"{sub_type}_{duration}"
-        amount = PRICES.get(price_key)
-        
+        amount = PRICES.get(f"{sub_type}_{duration}")
+
         if not amount:
             bot.answer_callback_query(call.id, "❌ Ошибка цены!")
             return
-        
+
         user_id = call.from_user.id
         payload = f"user_{user_id}_{sub_type}_{duration}"
-        
+
         headers = {
             "Content-Type": "application/json",
             "X-MerchantId": MERCHANT_ID,
             "X-Secret": API_SECRET
         }
-        
-        # Добавляем paymentMethod (СБП и Криптовалюта)
+
+        # ПРАВИЛЬНЫЙ PAYLOAD ДЛЯ PLATEGA
         payment_data = {
+            "command": "create",
             "paymentDetails": {
                 "amount": float(amount),
                 "currency": "RUB"
@@ -203,44 +203,44 @@ def process_buy(call: CallbackQuery):
             "return": "https://t.me/KeeperMag_bot",
             "failedUrl": "https://t.me/KeeperMag_bot",
             "payload": payload,
-            "paymentMethod": [2, 13]  # 2 - СБП, 13 - Криптовалюта
+            "paymentMethod": ["SBP", "CRYPTO"]
         }
-        
+
         response = requests.post(
-            f"{PLATEGA_API_URL}/transaction/process",
+            f"{PLATEGA_API_URL}/v2/transaction/process",
             headers=headers,
             json=payment_data,
             timeout=30
         )
-        
-        print("=" * 50)
-        print(f"ОТВЕТ PLATEGA: {response.status_code}")
-        print(f"ТЕЛО: {response.text}")
-        print("=" * 50)
-        
+
+        print("="*50)
+        print(f"КОД ОТВЕТА: {response.status_code}")
+        print(f"ТЕЛО ОТВЕТА: {response.text}")
+        print("="*50)
+
         if response.status_code == 200:
             result = response.json()
-            payment_url = result.get("url")
-            transaction_id = result.get("transactionId")
-            
+            payment_url = result.get("url") or result.get("payment_url")
+            transaction_id = result.get("transactionId") or result.get("id")
+
             if payment_url and transaction_id:
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=payment_url))
-                markup.add(InlineKeyboardButton("🔄 Проверить", callback_data=f"check_{transaction_id}"))
-                
+                markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_{transaction_id}"))
+
                 bot.edit_message_text(
                     f"💳 **Счет на {amount}₽**\n\n"
-                    f"📦 Подписка: {sub_type.upper()} {days} д.\n\n"
+                    f"📦 {sub_type.upper()} {days} д.\n"
                     f"👇 Нажмите для оплаты",
                     call.message.chat.id,
                     call.message.message_id,
                     reply_markup=markup
                 )
             else:
-                bot.edit_message_text(f"❌ Ошибка: {response.text[:200]}", call.message.chat.id, call.message.message_id)
+                bot.edit_message_text(f"❌ Ошибка: не получен URL\n{response.text[:200]}", call.message.chat.id, call.message.message_id)
         else:
-            bot.edit_message_text(f"❌ Ошибка {response.status_code}\n{response.text[:200]}", call.message.chat.id, call.message.message_id)
-            
+            bot.edit_message_text(f"❌ Ошибка {response.status_code}\n{response.text[:300]}", call.message.chat.id, call.message.message_id)
+
     except Exception as e:
         print(traceback.format_exc())
         bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", call.message.chat.id, call.message.message_id)
@@ -248,7 +248,10 @@ def process_buy(call: CallbackQuery):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
 def check_payment(call: CallbackQuery):
     transaction_id = call.data.split("_")[1]
-    headers = {"X-MerchantId": MERCHANT_ID, "X-Secret": API_SECRET}
+    headers = {
+        "X-MerchantId": MERCHANT_ID,
+        "X-Secret": API_SECRET
+    }
     
     try:
         response = requests.get(f"{PLATEGA_API_URL}/transaction/{transaction_id}", headers=headers, timeout=30)
@@ -261,8 +264,8 @@ def check_payment(call: CallbackQuery):
             else:
                 bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
-            bot.answer_callback_query(call.id, f"❌ Ошибка", show_alert=True)
-    except:
+            bot.answer_callback_query(call.id, "❌ Ошибка проверки", show_alert=True)
+    except Exception as e:
         bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
@@ -328,7 +331,7 @@ def update_price(message: Message):
             PRICES[key] = new_price
             bot.send_message(message.chat.id, f"✅ **Цена {key} изменена на {new_price}₽**", parse_mode="Markdown")
         else:
-            bot.send_message(message.chat.id, "❌ **Неверный ключ!** Доступны: lite_1day, lite_7day, vip_1day, vip_7day, vip_14day", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ **Неверный ключ!**", parse_mode="Markdown")
     except:
         bot.send_message(message.chat.id, "❌ **Неверный формат!**\nПример: `lite_1day:150`", parse_mode="Markdown")
 
@@ -422,7 +425,8 @@ if __name__ == '__main__':
     try:
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
+        print("✅ Webhook установлен")
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"⚠️ Ошибка: {e}")
     
     app.run(host='0.0.0.0', port=5000)
