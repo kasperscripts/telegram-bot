@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify
 # ============================================
 BOT_TOKEN = "8664140220:AAGDF8R4pQM31nd_ZMOFgCK69MMReNxWEOA"
 MERCHANT_ID = "709e8d20-e5f9-4ad0-8bae-311460ff7991"
-API_SECRET = "YZwWK4Kqpaaqhb8R5yxcOLKzUoljHmFABf3arpCTSColGlHIuYkVnP9BrHxulkDZJRh33ApHMCxlxbQHLBFmKIQJ8hBiQVxvj4uM"
+API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWGFWgpSXtgsrGYTjsXh7KEF8tDHdxLAvFW6XCNqG7xJ2"
 PLATEGA_API_URL = "https://app.platega.io"
 RAILWAY_URL = "https://telegram-bot-production-4bcc.up.railway.app"
 
@@ -155,11 +155,11 @@ def buy_subscription(message: Message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_lite")
 def choose_lite(call: CallbackQuery):
-    bot.edit_message_text("🌟 **LITE подписка**\n\n💰 1 день - 140₽\n💰 7 дней - 700₽\n\n💳 После оплаты подписка активируется автоматически\nДоступные способы: СБП, Криптовалюта", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
+    bot.edit_message_text("🌟 **LITE подписка**\n\n💰 1 день - 140₽\n💰 7 дней - 700₽\n\n💳 После оплаты подписка активируется автоматически", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_vip")
 def choose_vip(call: CallbackQuery):
-    bot.edit_message_text("👑 **VIP подписка**\n\n💰 1 день - 270₽\n💰 7 дней - 1200₽\n💰 14 дней - 2200₽\n\n💳 После оплаты подписка активируется автоматически\nДоступные способы: СБП, Криптовалюта", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
+    bot.edit_message_text("👑 **VIP подписка**\n\n💰 1 день - 270₽\n💰 7 дней - 1200₽\n💰 14 дней - 2200₽\n\n💳 После оплаты подписка активируется автоматически", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def process_buy(call: CallbackQuery):
@@ -191,7 +191,7 @@ def process_buy(call: CallbackQuery):
     try:
         response = requests.post(f"{PLATEGA_API_URL}/transaction/process", headers=headers, json=payment_data, timeout=30)
         print(f"Статус Platega: {response.status_code}")
-        print(f"Ответ Platega: {response.text}")
+        print(f"Ответ: {response.text}")
         
         if response.status_code == 200:
             result = response.json()
@@ -206,32 +206,19 @@ def process_buy(call: CallbackQuery):
                 f"💳 **Счет на оплату**\n\n"
                 f"💰 Сумма: {amount}₽\n"
                 f"📦 Подписка: {sub_type.upper()} {days} д.\n\n"
-                f"👇 Нажмите для оплаты\n"
-                f"💳 Способы: СБП, Криптовалюта",
+                f"👇 Нажмите для оплаты",
                 call.message.chat.id,
                 call.message.message_id,
-                parse_mode="Markdown",
                 reply_markup=markup
             )
         else:
             bot.edit_message_text(
-                f"❌ **Ошибка создания платежа**\n\n"
-                f"Код: {response.status_code}\n"
-                f"Ответ: {response.text[:200]}\n\n"
-                f"Пожалуйста, попробуйте позже или обратитесь в поддержку.",
+                f"❌ Ошибка создания платежа\nКод: {response.status_code}",
                 call.message.chat.id,
                 call.message.message_id
             )
     except Exception as e:
-        print(f"Ошибка: {e}")
-        bot.edit_message_text(
-            f"❌ **Ошибка!**\n\n"
-            f"Платежная система временно недоступна.\n"
-            f"Пожалуйста, попробуйте позже.\n\n"
-            f"Ошибка: {str(e)[:100]}",
-            call.message.chat.id,
-            call.message.message_id
-        )
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:100]}", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
 def check_payment(call: CallbackQuery):
@@ -246,21 +233,17 @@ def check_payment(call: CallbackQuery):
         
         if response.status_code == 200:
             data = response.json()
-            status = data.get("status")
-            
-            if status == "CONFIRMED":
+            if data.get("status") == "CONFIRMED":
                 bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
-                bot.send_message(call.message.chat.id, "✅ **Подписка активирована!**\n\nБлагодарим за покупку!", parse_mode="Markdown")
-                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-            elif status == "PENDING":
-                bot.answer_callback_query(call.id, "⏳ Платеж еще не прошел", show_alert=True)
+                bot.send_message(call.message.chat.id, "✅ Подписка активирована!")
+                # Активируем подписку в базе данных
+                # Здесь нужна функция активации
             else:
-                bot.answer_callback_query(call.id, f"Статус: {status}", show_alert=True)
+                bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка проверки", show_alert=True)
-    except Exception as e:
-        print(f"Ошибка проверки: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка соединения", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Ошибка проверки")
+    except:
+        bot.answer_callback_query(call.id, "❌ Ошибка")
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
 def info_menu(message: Message):
@@ -322,8 +305,7 @@ def show_stats(message: Message):
         f"📊 **СТАТИСТИКА**\n\n"
         f"👥 Пользователей: {stats['total_users']}\n"
         f"✅ Активных подписок: {stats['active_subs']}\n"
-        f"💰 Доход: {stats['total_income']}₽\n"
-        f"🆓 Ключей: {stats['unused_keys']}"
+        f"💰 Доход: {stats['total_income']}₽"
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
@@ -351,15 +333,14 @@ def telegram_webhook():
         bot.process_new_updates([update])
         return "OK", 200
     except Exception as e:
-        print(f"Ошибка вебхука Telegram: {e}")
+        print(f"Ошибка: {e}")
         return "Error", 200
 
 @app.route('/webhook', methods=['POST'])
 def platega_webhook():
     try:
         data = request.json
-        print(f"📡 Получен вебхук от Platega: {json.dumps(data, indent=2)}")
-        
+        print(f"Получен вебхук: {json.dumps(data, indent=2)}")
         status = data.get('status')
         payload = data.get('payload')
         
@@ -369,43 +350,29 @@ def platega_webhook():
                 user_id = int(parts[1])
                 sub_type = parts[2]
                 days = int(parts[3].replace('day', ''))
-                
                 db.activate_subscription(user_id, sub_type, days)
-                
                 try:
-                    bot.send_message(
-                        user_id,
-                        f"✅ **Оплата подтверждена!**\n\n"
-                        f"📦 Подписка: {sub_type.upper()}\n"
-                        f"📅 Период: {days} д.\n\n"
-                        f"🎉 Спасибо за покупку!",
-                        parse_mode="Markdown"
-                    )
+                    bot.send_message(user_id, f"✅ Оплата подтверждена! Подписка {sub_type.upper()} на {days} дней активирована!")
                 except:
                     pass
-                
-                return jsonify({"status": "ok"}), 200
-        
-        return jsonify({"status": "ignored"}), 200
+        return jsonify({"status": "ok"}), 200
     except Exception as e:
-        print(f"Ошибка вебхука Platega: {e}")
+        print(f"Ошибка: {e}")
         return jsonify({"status": "error"}), 500
 
 # ============================================
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
+    # Устанавливаем вебхук Telegram
     try:
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": f"{RAILWAY_URL}/telegram_webhook"}
-        )
-        print(f"✅ Webhook Telegram установлен: {RAILWAY_URL}/telegram_webhook")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": f"{RAILWAY_URL}/telegram_webhook"})
+        print(f"✅ Webhook установлен: {RAILWAY_URL}/telegram_webhook")
     except Exception as e:
-        print(f"⚠️ Ошибка установки вебхука: {e}")
+        print(f"⚠️ Ошибка: {e}")
     
     print(f"🚀 БОТ ЗАПУЩЕН!")
     print(f"📡 Callback URL для Platega: {RAILWAY_URL}/webhook")
-    print(f"🤖 Бот в Telegram: @KeeperMag_bot")
+    print(f"🤖 Бот: @KeeperMag_bot")
     app.run(host='0.0.0.0', port=5000)
