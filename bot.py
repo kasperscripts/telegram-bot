@@ -16,6 +16,7 @@ MERCHANT_ID = "709e8d20-e5f9-4ad0-8bae-311460ff7991"
 API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWGFWgpSXtgsrGYTjsXh7KEF8tDHdxLAvFW6XCNqG7xJ2"
 PLATEGA_API_URL = "https://app.platega.io"
 RAILWAY_URL = "https://telegram-bot-production-4bcc.up.railway.app"
+VIP_GROUP_ID = -1003709565134  # ID вашей VIP группы
 
 MAIN_ADMIN_ID = 1302493787  # Главный админ
 
@@ -31,11 +32,11 @@ db = Database()
 user_states = {}
 app = Flask(__name__)
 
-# Временные блокировки ключей (user_id: {key: (sub_type, days, expires_at)})
+# Временные блокировки ключей
 reserved_keys = {}
 
 # ============================================
-# ФУНКЦИИ ДЛЯ РАБОТЫ С ЦЕНАМИ
+# ФУНКЦИИ ДЛЯ РАБОТЫ С ЦЕНАМИ И КЛЮЧАМИ
 # ============================================
 def get_price(key, default):
     try:
@@ -59,14 +60,13 @@ def set_price(key, value):
 
 def check_keys_available(sub_type, days):
     keys = db.get_all_keys()
+    reserved_codes = set()
+    for reserved in reserved_keys.values():
+        reserved_codes.add(reserved.get("key"))
+    
     for key in keys:
-        if key[2] == sub_type and key[3] == days and key[4] == 0:
-            # Проверяем не забронирован ли ключ
-            for reserved in reserved_keys.values():
-                if reserved.get("key") == key[1]:
-                    break
-            else:
-                return True
+        if key[2] == sub_type and key[3] == days and key[4] == 0 and key[1] not in reserved_codes:
+            return True
     return False
 
 def get_key_count(sub_type, days):
@@ -82,7 +82,6 @@ def get_key_count(sub_type, days):
     return count
 
 def reserve_key(sub_type, days, user_id):
-    """Бронирует ключ для пользователя на 30 минут"""
     keys = db.get_all_keys()
     reserved_codes = set()
     for reserved in reserved_keys.values():
@@ -100,32 +99,26 @@ def reserve_key(sub_type, days, user_id):
     return None
 
 def release_key(user_id):
-    """Освобождает забронированный ключ"""
     if user_id in reserved_keys:
         del reserved_keys[user_id]
         return True
     return False
 
 def get_reserved_key(user_id):
-    """Получает забронированный ключ для пользователя"""
     if user_id in reserved_keys:
         reserved = reserved_keys[user_id]
         if reserved["expires_at"] > datetime.now():
             return reserved
         else:
-            # Ключ просрочен, удаляем
             del reserved_keys[user_id]
     return None
 
 def activate_reserved_key(user_id):
-    """Активирует забронированный ключ"""
     reserved = get_reserved_key(user_id)
     if reserved:
         key = reserved["key"]
         sub_type = reserved["sub_type"]
         days = reserved["days"]
-        
-        # Активируем ключ
         db.use_key(key, user_id)
         del reserved_keys[user_id]
         return key, sub_type, days
@@ -157,6 +150,7 @@ def main_menu(user_is_admin=False):
         KeyboardButton("🌟 Купить подписку"),
         KeyboardButton("👤 Мой профиль"),
         KeyboardButton("❤️ Пожертвовать"),
+        KeyboardButton("📦 Получить VIP доступ"),
         KeyboardButton("ℹ️ Информация")
     ]
     if user_is_admin:
@@ -239,6 +233,65 @@ def is_admin(user_id):
 
 def is_main_admin(user_id):
     return user_id == MAIN_ADMIN_ID
+
+# ============================================
+# VIP ДОСТУП - ОДНОРАЗОВАЯ ССЫЛКА В ГРУППУ
+# ============================================
+@bot.message_handler(func=lambda message: message.text == "📦 Получить VIP доступ")
+def get_vip_access(message: Message):
+    user_id = message.from_user.id
+    sub_type, end_date = db.check_subscription(user_id)
+    
+    if sub_type != "vip":
+        bot.send_message(user_id, "❌ **Доступ только для VIP подписчиков!**\n\nПриобретите VIP подписку, чтобы получить доступ к закрытым материалам.", parse_mode="Markdown")
+        return
+    
+    if end_date < datetime.now():
+        bot.send_message(user_id, "❌ **Ваша VIP подписка истекла!**\n\nПродлите подписку для доступа к материалам.", parse_mode="Markdown")
+        return
+    
+    try:
+        # Создаем одноразовую ссылку в VIP группу
+        invite_link = bot.create_chat_invite_link(
+            chat_id=VIP_GROUP_ID,
+            member_limit=1,  # Одноразовая ссылка
+            expire_date=datetime.now() + timedelta(days=7)
+        )
+        
+        # Получаем ключ пользователя
+        keys = db.get_all_keys()
+        user_key = None
+        for key in keys:
+            if key[5] == user_id and key[4] == 1:  # used_by = user_id
+                user_key = key[1]
+                break
+        
+        if not user_key:
+            user_key = "Ключ не найден, обратитесь к администратору"
+        
+        days_left = (end_date - datetime.now()).days
+        
+        bot.send_message(
+            user_id,
+            f"🔑 **Ваш VIP ключ:** `{user_key}`\n\n"
+            f"📦 **Одноразовая ссылка для входа в VIP группу:**\n"
+            f"{invite_link.invite_link}\n\n"
+            f"⏰ **Подписка активна еще:** {days_left} д.\n"
+            f"⚠️ **Ссылка действительна ТОЛЬКО 1 РАЗ!**\n"
+            f"⚠️ После перехода вы получите доступ ко всем VIP материалам.",
+            parse_mode="Markdown"
+        )
+        
+        # Логируем выдачу доступа
+        print(f"✅ Пользователю {user_id} выдана одноразовая ссылка в VIP группу")
+        
+    except Exception as e:
+        print(f"Ошибка создания ссылки: {e}")
+        bot.send_message(
+            user_id,
+            "❌ **Ошибка создания ссылки!**\n\nПожалуйста, обратитесь к администратору @nikita1055",
+            parse_mode="Markdown"
+        )
 
 # ============================================
 # ОТЗЫВЫ
@@ -398,7 +451,6 @@ def process_buy(call: CallbackQuery):
             bot.answer_callback_query(call.id, "❌ Ошибка цены!")
             return
 
-        # Резервируем ключ
         reserved_key = reserve_key(sub_type, days, call.from_user.id)
         if not reserved_key:
             bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
@@ -468,7 +520,6 @@ def process_buy(call: CallbackQuery):
                     reply_markup=markup
                 )
             else:
-                # Если ошибка, освобождаем ключ
                 release_key(user_id)
                 bot.edit_message_text(f"❌ Ошибка: не получен URL", call.message.chat.id, call.message.message_id)
         else:
@@ -484,7 +535,6 @@ def process_buy(call: CallbackQuery):
 def cancel_payment(call: CallbackQuery):
     transaction_id = call.data.split("_")[1]
     
-    # Освобождаем ключ
     if release_key(call.from_user.id):
         bot.answer_callback_query(call.id, "❌ Оплата отменена, ключ возвращен")
         bot.edit_message_text("❌ **Оплата отменена**\n\nКлюч возвращен в пул.", call.message.chat.id, call.message.message_id)
@@ -513,14 +563,12 @@ def check_payment(call: CallbackQuery):
                 user_id = payment_data.get("user_id")
                 
                 if key and user_id:
-                    # Ключ уже активирован при создании платежа, просто активируем подписку
                     db.activate_subscription(user_id, sub_type, days)
                     bot.send_message(user_id, f"✅ **Оплата подтверждена!**\n\n🔑 Ваш ключ:\n`{key}`\n\n📦 Подписка: {sub_type.upper()} {days} д.\n\nСохраните ключ!", parse_mode="Markdown")
                     
                 bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
                 bot.send_message(call.message.chat.id, "✅ Подписка активирована! Ключ отправлен в личные сообщения.")
                 
-                # Очищаем резервирование
                 release_key(user_id)
                 if f"payment_{transaction_id}" in user_states:
                     del user_states[f"payment_{transaction_id}"]
@@ -715,7 +763,6 @@ def process_delete_keys(message: Message):
         "-v14d": ("vip", 14, "vip_14d")
     }
     
-    # Проверяем первый лайн - если это команда на удаление типа
     first_line = lines[0].strip().lower()
     if first_line in type_map:
         target_type, target_days, stat_key = type_map[first_line]
@@ -732,7 +779,6 @@ def process_delete_keys(message: Message):
         bot.send_message(message.chat.id, result, parse_mode="Markdown")
         return
     
-    # Иначе удаляем конкретные ключи
     keys_to_delete = set(lines)
     all_keys = db.get_all_keys()
     
@@ -799,39 +845,101 @@ def list_keys(message: Message):
         bot.send_message(message.chat.id, "📭 **Нет ключей**", parse_mode="Markdown")
         return
     
-    # Фильтруем ключи: главный видит все, обычный админ только свои
-    if is_main:
-        filtered_keys = all_keys
+    # Группируем по типам с детализацией
+    lite_1d_available = []
+    lite_1d_used = []
+    lite_7d_available = []
+    lite_7d_used = []
+    vip_1d_available = []
+    vip_1d_used = []
+    vip_7d_available = []
+    vip_7d_used = []
+    vip_14d_available = []
+    vip_14d_used = []
+    
+    for key in all_keys:
+        key_code, sub_type, days, is_used, used_by = key[1], key[2], key[3], key[4], key[5]
+        if sub_type == "lite" and days == 1:
+            if is_used:
+                lite_1d_used.append(f"`{key_code}` (пользователь {used_by})")
+            else:
+                lite_1d_available.append(f"`{key_code}`")
+        elif sub_type == "lite" and days == 7:
+            if is_used:
+                lite_7d_used.append(f"`{key_code}` (пользователь {used_by})")
+            else:
+                lite_7d_available.append(f"`{key_code}`")
+        elif sub_type == "vip" and days == 1:
+            if is_used:
+                vip_1d_used.append(f"`{key_code}` (пользователь {used_by})")
+            else:
+                vip_1d_available.append(f"`{key_code}`")
+        elif sub_type == "vip" and days == 7:
+            if is_used:
+                vip_7d_used.append(f"`{key_code}` (пользователь {used_by})")
+            else:
+                vip_7d_available.append(f"`{key_code}`")
+        elif sub_type == "vip" and days == 14:
+            if is_used:
+                vip_14d_used.append(f"`{key_code}` (пользователь {used_by})")
+            else:
+                vip_14d_available.append(f"`{key_code}`")
+    
+    text = "🔑 **ПОДРОБНЫЙ СПИСОК КЛЮЧЕЙ:**\n\n"
+    
+    text += "🌟 **LITE 1 день:**\n"
+    text += f"   ✅ Доступно: {len(lite_1d_available)} шт\n"
+    if lite_1d_available:
+        text += f"   {', '.join(lite_1d_available[:10])}\n"
+    text += f"   ❌ Выдано: {len(lite_1d_used)} шт\n"
+    if lite_1d_used:
+        text += f"   {', '.join(lite_1d_used[:5])}\n"
+    text += "\n"
+    
+    text += "🌟 **LITE 7 дней:**\n"
+    text += f"   ✅ Доступно: {len(lite_7d_available)} шт\n"
+    if lite_7d_available:
+        text += f"   {', '.join(lite_7d_available[:10])}\n"
+    text += f"   ❌ Выдано: {len(lite_7d_used)} шт\n"
+    if lite_7d_used:
+        text += f"   {', '.join(lite_7d_used[:5])}\n"
+    text += "\n"
+    
+    text += "👑 **VIP 1 день:**\n"
+    text += f"   ✅ Доступно: {len(vip_1d_available)} шт\n"
+    if vip_1d_available:
+        text += f"   {', '.join(vip_1d_available[:10])}\n"
+    text += f"   ❌ Выдано: {len(vip_1d_used)} шт\n"
+    if vip_1d_used:
+        text += f"   {', '.join(vip_1d_used[:5])}\n"
+    text += "\n"
+    
+    text += "👑 **VIP 7 дней:**\n"
+    text += f"   ✅ Доступно: {len(vip_7d_available)} шт\n"
+    if vip_7d_available:
+        text += f"   {', '.join(vip_7d_available[:10])}\n"
+    text += f"   ❌ Выдано: {len(vip_7d_used)} шт\n"
+    if vip_7d_used:
+        text += f"   {', '.join(vip_7d_used[:5])}\n"
+    text += "\n"
+    
+    text += "👑 **VIP 14 дней:**\n"
+    text += f"   ✅ Доступно: {len(vip_14d_available)} шт\n"
+    if vip_14d_available:
+        text += f"   {', '.join(vip_14d_available[:10])}\n"
+    text += f"   ❌ Выдано: {len(vip_14d_used)} шт\n"
+    if vip_14d_used:
+        text += f"   {', '.join(vip_14d_used[:5])}\n"
+    text += "\n"
+    
+    text += f"📊 **ИТОГО:** {len(all_keys)} шт (✅ Доступно: {len(lite_1d_available)+len(lite_7d_available)+len(vip_1d_available)+len(vip_7d_available)+len(vip_14d_available)}, ❌ Выдано: {len(lite_1d_used)+len(lite_7d_used)+len(vip_1d_used)+len(vip_7d_used)+len(vip_14d_used)})"
+    
+    # Отправляем по частям если текст длинный
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            bot.send_message(message.chat.id, text[i:i+4000], parse_mode="Markdown")
     else:
-        filtered_keys = []
-        for key in all_keys:
-            # Если ключ добавлен этим админом или не использован
-            # В database.py нужно добавить поле added_by при добавлении ключа
-            filtered_keys.append(key)
-    
-    if not filtered_keys:
-        bot.send_message(message.chat.id, "📭 **Нет ключей**", parse_mode="Markdown")
-        return
-    
-    # Группируем по типам
-    lite_1d = [k for k in filtered_keys if k[2] == "lite" and k[3] == 1 and k[4] == 0]
-    lite_7d = [k for k in filtered_keys if k[2] == "lite" and k[3] == 7 and k[4] == 0]
-    vip_1d = [k for k in filtered_keys if k[2] == "vip" and k[3] == 1 and k[4] == 0]
-    vip_7d = [k for k in filtered_keys if k[2] == "vip" and k[3] == 7 and k[4] == 0]
-    vip_14d = [k for k in filtered_keys if k[2] == "vip" and k[3] == 14 and k[4] == 0]
-    
-    used_keys = [k for k in filtered_keys if k[4] == 1]
-    
-    text = "🔑 **СТАТИСТИКА КЛЮЧЕЙ:**\n\n"
-    text += f"🌟 **LITE 1 день:** {len(lite_1d)} шт\n"
-    text += f"🌟 **LITE 7 дней:** {len(lite_7d)} шт\n"
-    text += f"👑 **VIP 1 день:** {len(vip_1d)} шт\n"
-    text += f"👑 **VIP 7 дней:** {len(vip_7d)} шт\n"
-    text += f"👑 **VIP 14 дней:** {len(vip_14d)} шт\n"
-    text += f"❌ **Использовано:** {len(used_keys)} шт\n"
-    text += f"📊 **Всего:** {len(filtered_keys)} шт"
-    
-    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📊 Статистика" and is_admin(message.from_user.id))
 def show_stats(message: Message):
@@ -854,7 +962,6 @@ def show_stats(message: Message):
         
         avg_check = total_income / total_success if total_success > 0 else 0
         
-        # Статистика ключей
         all_keys = db.get_all_keys()
         lite_available = sum(1 for k in all_keys if k[2] == "lite" and k[4] == 0)
         vip_available = sum(1 for k in all_keys if k[2] == "vip" and k[4] == 0)
@@ -949,6 +1056,7 @@ if __name__ == '__main__':
     print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
     print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
+    print(f"👑 VIP группа ID: {VIP_GROUP_ID}")
     print("=" * 60)
     
     try:
