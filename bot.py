@@ -23,10 +23,6 @@ PLATEGA_API_URL = "https://app.platega.io"
 CRYPTOBOT_TOKEN = "589863:AA1iJtmR2y4tzd1hKzPKd4d184n9CGAyRRc"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 
-# НАЦЕНКА НА КРИПТОПЛАТЕЖИ (30%)
-CRYPTO_MARKUP_PERCENT = 30
-USDT_RATE = 100  # 1 USDT = 100 RUB (настройте под актуальный курс)
-
 # ГРУППЫ ДЛЯ ПОДПИСЧИКОВ
 VIP_GROUP_ID = -1003709565134
 LITE_GROUP_ID = -1003709565134
@@ -47,6 +43,74 @@ app = Flask(__name__)
 
 # Временные блокировки ключей
 reserved_keys = {}
+
+# Кэш для курса USDT
+usdt_rate_cache = {"rate": 73, "timestamp": 0}
+
+# ============================================
+# ФУНКЦИИ ДЛЯ РАБОТЫ С НАСТРОЙКАМИ (наценка)
+# ============================================
+def get_markup_percent():
+    """Получает процент наценки из БД"""
+    try:
+        cursor = db.connection.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = 'crypto_markup_percent'")
+        result = cursor.fetchone()
+        if result:
+            return int(result[0])
+    except:
+        pass
+    return 30  # значение по умолчанию
+
+def set_markup_percent(value):
+    """Сохраняет процент наценки в БД"""
+    try:
+        cursor = db.connection.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ("crypto_markup_percent", str(value)))
+        db.connection.commit()
+        return True
+    except:
+        return False
+
+# ============================================
+# ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ АКТУАЛЬНОГО КУРСА USDT
+# ============================================
+def get_usdt_rate():
+    """
+    Получает актуальный курс USDT к RUB с нескольких источников
+    Кэшируется на 5 минут
+    """
+    global usdt_rate_cache
+    
+    # Проверяем кэш (5 минут)
+    if datetime.now().timestamp() - usdt_rate_cache["timestamp"] < 300:
+        return usdt_rate_cache["rate"]
+    
+    # Пробуем получить курс с Binance (USDT/RUB)
+    try:
+        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=USDTTRY", timeout=5)
+        if response.status_code == 200:
+            # Binance дает TRY, конвертируем примерный курс (1 TRY ≈ 3.5 RUB)
+            rate = float(response.json().get("price", 73)) * 0.35
+            usdt_rate_cache = {"rate": round(rate, 2), "timestamp": datetime.now().timestamp()}
+            return round(rate, 2)
+    except:
+        pass
+    
+    # Пробуем Bybit
+    try:
+        response = requests.get("https://api.bybit.com/v5/market/ticker?symbol=USDRUB", timeout=5)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("retCode") == 0:
+                rate = float(result["result"]["list"][0]["lastPrice"])
+                usdt_rate_cache = {"rate": round(rate, 2), "timestamp": datetime.now().timestamp()}
+                return round(rate, 2)
+    except:
+        pass
+    
+    # Возвращаем кэшированный курс или значение по умолчанию
+    return usdt_rate_cache["rate"]
 
 # ============================================
 # ФУНКЦИИ ДЛЯ РАБОТЫ С ЦЕНАМИ И КЛЮЧАМИ
@@ -138,13 +202,12 @@ def create_group_link(sub_type):
 # ФУНКЦИЯ ДЛЯ РАСЧЕТА СУММЫ С НАЦЕНКОЙ (КРИПТА)
 # ============================================
 def calculate_crypto_amount(rub_amount):
-    """
-    Правильный расчет: цена товара + 30% комиссии
-    Пример: 500₽ + 30% = 650₽ = 6.5 USDT
-    """
-    final_rub = rub_amount * (1 + CRYPTO_MARKUP_PERCENT / 100)
-    usdt_amount = final_rub / USDT_RATE
-    return round(usdt_amount, 2)
+    """Расчет суммы в USDT с наценкой и актуальным курсом"""
+    usdt_rate = get_usdt_rate()
+    markup_percent = get_markup_percent()
+    final_rub = rub_amount * (1 + markup_percent / 100)
+    usdt_amount = final_rub / usdt_rate
+    return round(usdt_amount, 2), usdt_rate, markup_percent, final_rub
 
 # ============================================
 # ПЛАТЕЖИ ЧЕРЕЗ PLATEGA
@@ -200,13 +263,12 @@ def check_platega_payment(transaction_id):
         return None
 
 # ============================================
-# ПЛАТЕЖИ ЧЕРЕЗ CRYPTOBOT (С НАЦЕНКОЙ 30%)
+# ПЛАТЕЖИ ЧЕРЕЗ CRYPTOBOT (С ДИНАМИЧЕСКОЙ НАЦЕНКОЙ)
 # ============================================
 def create_cryptobot_payment(rub_amount, user_id, order_id):
-    """Создает счет в USDT с наценкой 30%"""
+    """Создает счет в USDT с динамической наценкой и курсом"""
     
-    usdt_amount = calculate_crypto_amount(rub_amount)
-    final_rub = rub_amount * (1 + CRYPTO_MARKUP_PERCENT / 100)
+    usdt_amount, usdt_rate, markup_percent, final_rub = calculate_crypto_amount(rub_amount)
     
     headers = {
         "Content-Type": "application/json",
@@ -216,7 +278,7 @@ def create_cryptobot_payment(rub_amount, user_id, order_id):
     data = {
         "asset": "USDT",
         "amount": usdt_amount,
-        "description": f"Подписка {order_id} (цена товара: {rub_amount}₽ + комиссия {CRYPTO_MARKUP_PERCENT}% = {final_rub:.2f}₽)",
+        "description": f"Подписка {order_id} (цена товара: {rub_amount}₽ + комиссия {markup_percent}% = {final_rub:.2f}₽ по курсу {usdt_rate}₽/USDT)",
         "paid_btn_name": "callback",
         "paid_btn_url": f"{RAILWAY_URL}/payment_success",
         "payload": f"user_{user_id}_{order_id}"
@@ -236,7 +298,9 @@ def create_cryptobot_payment(rub_amount, user_id, order_id):
                     "transaction_id": str(invoice.get("invoice_id")),
                     "usdt_amount": usdt_amount,
                     "rub_original": rub_amount,
-                    "rub_with_markup": final_rub
+                    "rub_with_markup": final_rub,
+                    "usdt_rate": usdt_rate,
+                    "markup_percent": markup_percent
                 }
         return {"success": False, "error": f"Ошибка {response.status_code}: {response.text}"}
     except Exception as e:
@@ -305,12 +369,11 @@ def choose_subscription_type():
     return markup
 
 def choose_payment_method(sub_type, days, amount):
-    crypto_usdt = calculate_crypto_amount(amount)
-    crypto_total_rub = amount * (1 + CRYPTO_MARKUP_PERCENT / 100)
+    usdt_amount, usdt_rate, markup_percent, final_rub = calculate_crypto_amount(amount)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("💳 Platega (СБП/Карта)", callback_data=f"pay_platega_{sub_type}_{days}_{amount}"),
-        InlineKeyboardButton(f"🪙 Криптовалюта USDT ({crypto_usdt} USDT ≈ {crypto_total_rub:.0f}₽ с комиссией)", callback_data=f"pay_crypto_{sub_type}_{days}_{amount}"),
+        InlineKeyboardButton(f"🪙 Криптовалюта USDT ({usdt_amount} USDT)", callback_data=f"pay_crypto_{sub_type}_{days}_{amount}"),
         InlineKeyboardButton("◀️ Назад", callback_data="back_to_choice")
     )
     return markup
@@ -357,6 +420,7 @@ def admin_menu():
         KeyboardButton("➕ Добавить ключи (массово)"),
         KeyboardButton("🗑 Удалить ключи (массово)"),
         KeyboardButton("💰 Изменить цены"),
+        KeyboardButton("📊 Крипто-настройки"),
         KeyboardButton("📋 Список ключей"),
         KeyboardButton("📊 Статистика"),
         KeyboardButton("👥 Управление админами"),
@@ -421,7 +485,7 @@ def donate_menu(message: Message):
     markup = InlineKeyboardMarkup()
     markup.add(
         InlineKeyboardButton("💳 Platega (без комиссии)", callback_data="donate_platega"),
-        InlineKeyboardButton("🪙 Криптовалюта USDT (+30% комиссии)", callback_data="donate_crypto")
+        InlineKeyboardButton("🪙 Криптовалюта USDT (+ комиссия)", callback_data="donate_crypto")
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
@@ -455,7 +519,7 @@ def process_donate_platega(message: Message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "donate_crypto")
 def donate_crypto(call: CallbackQuery):
-    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму пожертвования (в рублях):**\n\nМинимальная сумма: 10₽\n\n(Сумма будет увеличена на 30% комиссии)", parse_mode="Markdown")
+    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму пожертвования (в рублях):**\n\nМинимальная сумма: 10₽", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_donate_crypto)
 
 def process_donate_crypto(message: Message):
@@ -464,9 +528,6 @@ def process_donate_crypto(message: Message):
         if rub_amount < 10:
             bot.send_message(message.chat.id, "❌ Минимальная сумма 10₽")
             return
-        
-        usdt_amount = calculate_crypto_amount(rub_amount)
-        final_rub = rub_amount * (1 + CRYPTO_MARKUP_PERCENT / 100)
         
         result = create_cryptobot_payment(rub_amount, message.from_user.id, "donate")
         
@@ -477,9 +538,10 @@ def process_donate_crypto(message: Message):
                 message.chat.id,
                 f"❤️ **Спасибо за поддержку!**\n\n"
                 f"💰 Сумма пожертвования: {rub_amount}₽\n"
-                f"📈 Комиссия {CRYPTO_MARKUP_PERCENT}%: {rub_amount * CRYPTO_MARKUP_PERCENT / 100:.2f}₽\n"
-                f"💵 **Итого к оплате:** {final_rub:.2f}₽\n"
-                f"🪙 **В USDT:** {usdt_amount} USDT\n\n"
+                f"📈 Комиссия {result['markup_percent']}%: {rub_amount * result['markup_percent'] / 100:.2f}₽\n"
+                f"💵 **Итого к оплате:** {result['rub_with_markup']:.2f}₽\n"
+                f"🪙 **В USDT:** {result['usdt_amount']} USDT\n"
+                f"💱 Курс: {result['usdt_rate']}₽/USDT\n\n"
                 f"👇 Нажмите для оплаты криптовалютой",
                 parse_mode="Markdown",
                 reply_markup=markup
@@ -497,7 +559,7 @@ def start_command(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     db.add_user(user_id, username)
-    bot.send_message(user_id, "🤖 Добро пожаловать!\n\n🌟 Бот для продажи подписок LITE и VIP.\n💳 Оплата через Platega (без комиссии) или криптовалютой USDT (комиссия 30%)", reply_markup=main_menu(is_admin(user_id)))
+    bot.send_message(user_id, "🤖 Добро пожаловать!\n\n🌟 Бот для продажи подписок LITE и VIP.\n💳 Оплата через Platega (без комиссии) или криптовалютой USDT (с комиссией)", reply_markup=main_menu(is_admin(user_id)))
 
 @bot.message_handler(func=lambda message: message.text == "👤 Мой профиль")
 def profile(message: Message):
@@ -622,14 +684,13 @@ def process_crypto_payment(call: CallbackQuery):
         markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_crypto_{result['transaction_id']}"))
         markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_crypto_{result['transaction_id']}"))
         
-        crypto_total_rub = rub_amount * (1 + CRYPTO_MARKUP_PERCENT / 100)
-        
         bot.edit_message_text(
             f"🪙 **Крипто-счет**\n\n"
             f"💰 Цена подписки: {rub_amount}₽\n"
-            f"📈 Комиссия {CRYPTO_MARKUP_PERCENT}%: {rub_amount * CRYPTO_MARKUP_PERCENT / 100:.2f}₽\n"
-            f"💵 **Итого к оплате:** {crypto_total_rub:.2f}₽\n"
+            f"📈 Комиссия {result['markup_percent']}%: {rub_amount * result['markup_percent'] / 100:.2f}₽\n"
+            f"💵 **Итого к оплате:** {result['rub_with_markup']:.2f}₽\n"
             f"🪙 **В USDT:** {result['usdt_amount']} USDT\n"
+            f"💱 Курс: {result['usdt_rate']}₽/USDT\n"
             f"📦 {sub_type.upper()} {days} д.\n"
             f"⏰ Ключ зарезервирован на 30 минут\n\n"
             f"👇 Нажмите для оплаты",
@@ -738,12 +799,15 @@ def back_to_choice(call: CallbackQuery):
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
 def info_menu(message: Message):
+    markup_percent = get_markup_percent()
+    usdt_rate = get_usdt_rate()
     text = (
         "ℹ️ **ИНФОРМАЦИЯ**\n\n"
         "🤖 **Бот для продажи подписок LITE и VIP**\n\n"
         "💳 **Способы оплаты:**\n"
         "• Platega (СБП, банковские карты) - **без комиссии**\n"
-        f"• Криптовалюта USDT (через CryptoBot) - **комиссия {CRYPTO_MARKUP_PERCENT}%**\n\n"
+        f"• Криптовалюта USDT (через CryptoBot) - **комиссия {markup_percent}%**\n\n"
+        f"💱 **Актуальный курс USDT:** {usdt_rate}₽\n\n"
         "📌 **Как пользоваться:**\n"
         "• Купите подписку через меню\n"
         "• Выберите удобный способ оплаты\n"
@@ -760,7 +824,7 @@ def info_menu(message: Message):
     bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
 
 # ============================================
-# АДМИН-ПАНЕЛЬ (сокращенно для объема)
+# АДМИН-ПАНЕЛЬ
 # ============================================
 @bot.message_handler(func=lambda message: message.text == "⚙️ Админ-панель" and is_admin(message.from_user.id))
 def admin_panel(message: Message):
@@ -821,6 +885,52 @@ def manage_admins_menu(message: Message):
         text += f"• `{admin_id}` - @{username or 'без username'} {mark}\n"
     text += "\n**Команды:**\n`/addadmin ID` - добавить\n`/removeadmin ID` - удалить"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == "📊 Крипто-настройки" and is_admin(message.from_user.id))
+def crypto_settings_menu(message: Message):
+    markup_percent = get_markup_percent()
+    usdt_rate = get_usdt_rate()
+    text = (
+        "🪙 **КРИПТО-НАСТРОЙКИ**\n\n"
+        f"📈 **Текущая комиссия:** {markup_percent}%\n"
+        f"💱 **Актуальный курс USDT:** {usdt_rate}₽ (автоматически)\n\n"
+        "**Изменить комиссию:**\n"
+        "Отправьте: `/set_markup 35`\n\n"
+        "**Проверить курс:**\n"
+        "Отправьте: `/check_rate`"
+    )
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['set_markup'])
+def set_markup_command(message: Message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "❌ У вас нет прав!")
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) != 2:
+            bot.send_message(message.chat.id, "❌ Используйте: `/set_markup 35`", parse_mode="Markdown")
+            return
+        
+        new_markup = int(parts[1])
+        if new_markup < 0 or new_markup > 100:
+            bot.send_message(message.chat.id, "❌ Комиссия должна быть от 0 до 100%")
+            return
+        
+        set_markup_percent(new_markup)
+        bot.send_message(message.chat.id, f"✅ **Комиссия изменена на {new_markup}%**\n\nТеперь криптоплатежи будут с комиссией {new_markup}%", parse_mode="Markdown")
+    except:
+        bot.send_message(message.chat.id, "❌ Ошибка! Используйте: `/set_markup 35`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['check_rate'])
+def check_rate_command(message: Message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "❌ У вас нет прав!")
+        return
+    
+    usdt_rate = get_usdt_rate()
+    bot.send_message(message.chat.id, f"💱 **Актуальный курс USDT:** {usdt_rate} ₽\n\n*Курс обновляется автоматически раз в 5 минут*", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "➕ Добавить ключи (массово)" and is_admin(message.from_user.id))
 def add_keys_batch(message: Message):
@@ -1043,12 +1153,16 @@ def payment_cancel():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
+    # Инициализируем курс при старте
+    get_usdt_rate()
+    
     print("=" * 60)
     print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
     print(f"📡 Callback URL (Platega): {RAILWAY_URL}/webhook")
     print(f"🪙 CryptoBot URL: {RAILWAY_URL}/crypto_webhook")
-    print(f"💰 Комиссия за криптоплатежи: {CRYPTO_MARKUP_PERCENT}%")
+    print(f"💰 Текущая комиссия: {get_markup_percent()}%")
+    print(f"💱 Текущий курс USDT: {get_usdt_rate()}₽")
     print("=" * 60)
     
     try:
