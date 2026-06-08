@@ -23,6 +23,9 @@ PLATEGA_API_URL = "https://app.platega.io"
 CRYPTOBOT_TOKEN = "589863:AA1iJtmR2y4tzd1hKzPKd4d184n9CGAyRRc"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 
+# НАЦЕНКА НА КРИПТОПЛАТЕЖИ (ТОЛЬКО ДЛЯ ПОДПИСОК!)
+CRYPTO_MARKUP_PERCENT = 30
+
 # ГРУППЫ ДЛЯ ПОДПИСЧИКОВ
 VIP_GROUP_ID = -1003709565134
 LITE_GROUP_ID = -1003709565134
@@ -48,7 +51,7 @@ reserved_keys = {}
 usdt_rate_cache = {"rate": 73, "timestamp": 0}
 
 # ============================================
-# ФУНКЦИИ ДЛЯ РАБОТЫ С НАСТРОЙКАМИ (наценка)
+# ФУНКЦИИ ДЛЯ РАБОТЫ С НАСТРОЙКАМИ
 # ============================================
 def get_markup_percent():
     """Получает процент наценки из БД"""
@@ -60,7 +63,7 @@ def get_markup_percent():
             return int(result[0])
     except:
         pass
-    return 30  # значение по умолчанию
+    return 30
 
 def set_markup_percent(value):
     """Сохраняет процент наценки в БД"""
@@ -76,40 +79,17 @@ def set_markup_percent(value):
 # ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ АКТУАЛЬНОГО КУРСА USDT
 # ============================================
 def get_usdt_rate():
-    """
-    Получает актуальный курс USDT к RUB с нескольких источников
-    Кэшируется на 5 минут
-    """
     global usdt_rate_cache
-    
-    # Проверяем кэш (5 минут)
     if datetime.now().timestamp() - usdt_rate_cache["timestamp"] < 300:
         return usdt_rate_cache["rate"]
-    
-    # Пробуем получить курс с Binance (USDT/RUB)
     try:
-        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=USDTTRY", timeout=5)
+        response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=rub", timeout=5)
         if response.status_code == 200:
-            # Binance дает TRY, конвертируем примерный курс (1 TRY ≈ 3.5 RUB)
-            rate = float(response.json().get("price", 73)) * 0.35
+            rate = response.json().get("tether", {}).get("rub", 73)
             usdt_rate_cache = {"rate": round(rate, 2), "timestamp": datetime.now().timestamp()}
             return round(rate, 2)
     except:
         pass
-    
-    # Пробуем Bybit
-    try:
-        response = requests.get("https://api.bybit.com/v5/market/ticker?symbol=USDRUB", timeout=5)
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("retCode") == 0:
-                rate = float(result["result"]["list"][0]["lastPrice"])
-                usdt_rate_cache = {"rate": round(rate, 2), "timestamp": datetime.now().timestamp()}
-                return round(rate, 2)
-    except:
-        pass
-    
-    # Возвращаем кэшированный курс или значение по умолчанию
     return usdt_rate_cache["rate"]
 
 # ============================================
@@ -140,7 +120,6 @@ def check_keys_available(sub_type, days):
     reserved_codes = set()
     for reserved in reserved_keys.values():
         reserved_codes.add(reserved.get("key"))
-    
     for key in keys:
         if key[2] == sub_type and key[3] == days and key[4] == 0 and key[1] not in reserved_codes:
             return True
@@ -152,7 +131,6 @@ def get_key_count(sub_type, days):
     reserved_codes = set()
     for reserved in reserved_keys.values():
         reserved_codes.add(reserved.get("key"))
-    
     for key in keys:
         if key[2] == sub_type and key[3] == days and key[4] == 0 and key[1] not in reserved_codes:
             count += 1
@@ -163,7 +141,6 @@ def reserve_key(sub_type, days, user_id):
     reserved_codes = set()
     for reserved in reserved_keys.values():
         reserved_codes.add(reserved.get("key"))
-    
     for key in keys:
         if key[2] == sub_type and key[3] == days and key[4] == 0 and key[1] not in reserved_codes:
             reserved_keys[user_id] = {
@@ -183,11 +160,7 @@ def release_key(user_id):
 
 def create_group_link(sub_type):
     try:
-        if sub_type == "vip":
-            group_id = VIP_GROUP_ID
-        else:
-            group_id = LITE_GROUP_ID
-        
+        group_id = VIP_GROUP_ID if sub_type == "vip" else LITE_GROUP_ID
         invite_link = bot.create_chat_invite_link(
             chat_id=group_id,
             member_limit=1,
@@ -199,15 +172,21 @@ def create_group_link(sub_type):
         return None
 
 # ============================================
-# ФУНКЦИЯ ДЛЯ РАСЧЕТА СУММЫ С НАЦЕНКОЙ (КРИПТА)
+# ФУНКЦИИ РАСЧЕТА (С КОМИССИЕЙ ТОЛЬКО ДЛЯ ПОДПИСОК)
 # ============================================
-def calculate_crypto_amount(rub_amount):
-    """Расчет суммы в USDT с наценкой и актуальным курсом"""
+def calculate_crypto_amount_with_markup(rub_amount):
+    """Для покупки подписок - с наценкой"""
     usdt_rate = get_usdt_rate()
     markup_percent = get_markup_percent()
     final_rub = rub_amount * (1 + markup_percent / 100)
     usdt_amount = final_rub / usdt_rate
     return round(usdt_amount, 2), usdt_rate, markup_percent, final_rub
+
+def calculate_crypto_amount_no_markup(rub_amount):
+    """Для донатов - без наценки"""
+    usdt_rate = get_usdt_rate()
+    usdt_amount = rub_amount / usdt_rate
+    return round(usdt_amount, 2), usdt_rate
 
 # ============================================
 # ПЛАТЕЖИ ЧЕРЕЗ PLATEGA
@@ -218,23 +197,17 @@ def create_platega_payment(amount, user_id, order_id):
         "X-MerchantId": PLATEGA_MERCHANT_ID,
         "X-Secret": PLATEGA_API_SECRET
     }
-    
     data = {
         "command": "create",
-        "paymentDetails": {
-            "amount": float(amount),
-            "currency": "RUB"
-        },
-        "description": f"Подписка {order_id} для {user_id}",
+        "paymentDetails": {"amount": float(amount), "currency": "RUB"},
+        "description": f"Заказ {order_id} для {user_id}",
         "return": "https://t.me/KeeperMag_bot",
         "failedUrl": "https://t.me/KeeperMag_bot",
         "payload": f"user_{user_id}_{order_id}",
         "paymentMethod": ["SBP", "CRYPTO"]
     }
-    
     try:
         response = requests.post(f"{PLATEGA_API_URL}/v2/transaction/process", headers=headers, json=data, timeout=30)
-        
         if response.status_code == 200:
             result = response.json()
             return {
@@ -242,20 +215,14 @@ def create_platega_payment(amount, user_id, order_id):
                 "payment_url": result.get("url") or result.get("payment_url"),
                 "transaction_id": result.get("transactionId") or result.get("id")
             }
-        else:
-            return {"success": False, "error": f"Ошибка {response.status_code}: {response.text}"}
+        return {"success": False, "error": f"Ошибка {response.status_code}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 def check_platega_payment(transaction_id):
-    headers = {
-        "X-MerchantId": PLATEGA_MERCHANT_ID,
-        "X-Secret": PLATEGA_API_SECRET
-    }
-    
+    headers = {"X-MerchantId": PLATEGA_MERCHANT_ID, "X-Secret": PLATEGA_API_SECRET}
     try:
         response = requests.get(f"{PLATEGA_API_URL}/transaction/{transaction_id}", headers=headers, timeout=30)
-        
         if response.status_code == 200:
             return response.json().get("status")
         return None
@@ -263,31 +230,20 @@ def check_platega_payment(transaction_id):
         return None
 
 # ============================================
-# ПЛАТЕЖИ ЧЕРЕЗ CRYPTOBOT (С ДИНАМИЧЕСКОЙ НАЦЕНКОЙ)
+# ПЛАТЕЖИ ЧЕРЕЗ CRYPTOBOT
 # ============================================
-def create_cryptobot_payment(rub_amount, user_id, order_id):
-    """Создает счет в USDT с динамической наценкой и курсом"""
-    
-    usdt_amount, usdt_rate, markup_percent, final_rub = calculate_crypto_amount(rub_amount)
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Crypto-Pay-API-Token": CRYPTOBOT_TOKEN
-    }
-    
+def create_cryptobot_payment(amount_usdt, user_id, description, payload):
+    headers = {"Content-Type": "application/json", "Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
     data = {
         "asset": "USDT",
-        "amount": usdt_amount,
-        "description": f"Подписка {order_id} (цена товара: {rub_amount}₽ + комиссия {markup_percent}% = {final_rub:.2f}₽ по курсу {usdt_rate}₽/USDT)",
+        "amount": amount_usdt,
+        "description": description,
         "paid_btn_name": "callback",
         "paid_btn_url": f"{RAILWAY_URL}/payment_success",
-        "payload": f"user_{user_id}_{order_id}"
+        "payload": payload
     }
-    
     try:
         response = requests.post(f"{CRYPTOBOT_API_URL}/createInvoice", headers=headers, json=data, timeout=30)
-        print(f"Ответ CryptoBot: {response.status_code} - {response.text}")
-        
         if response.status_code == 200:
             result = response.json()
             if result.get("ok"):
@@ -295,36 +251,25 @@ def create_cryptobot_payment(rub_amount, user_id, order_id):
                 return {
                     "success": True,
                     "payment_url": invoice.get("pay_url"),
-                    "transaction_id": str(invoice.get("invoice_id")),
-                    "usdt_amount": usdt_amount,
-                    "rub_original": rub_amount,
-                    "rub_with_markup": final_rub,
-                    "usdt_rate": usdt_rate,
-                    "markup_percent": markup_percent
+                    "transaction_id": str(invoice.get("invoice_id"))
                 }
-        return {"success": False, "error": f"Ошибка {response.status_code}: {response.text}"}
+        return {"success": False, "error": f"Ошибка {response.status_code}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 def check_cryptobot_payment(invoice_id):
     headers = {"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
-    
     try:
         response = requests.get(f"{CRYPTOBOT_API_URL}/getInvoices", headers=headers, params={"invoice_ids": invoice_id}, timeout=30)
-        
         if response.status_code == 200:
             result = response.json()
             if result.get("ok"):
                 invoices = result.get("result", {}).get("items", [])
                 if invoices:
                     status = invoices[0].get("status")
-                    if status == "paid":
-                        return "paid"
-                    elif status == "active":
-                        return "pending"
+                    return "paid" if status == "paid" else "pending" if status == "active" else None
         return None
-    except Exception as e:
-        print(f"Ошибка проверки: {e}")
+    except:
         return None
 
 # Создаем таблицу settings
@@ -369,7 +314,7 @@ def choose_subscription_type():
     return markup
 
 def choose_payment_method(sub_type, days, amount):
-    usdt_amount, usdt_rate, markup_percent, final_rub = calculate_crypto_amount(amount)
+    usdt_amount, usdt_rate, markup_percent, final_rub = calculate_crypto_amount_with_markup(amount)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("💳 Platega (СБП/Карта)", callback_data=f"pay_platega_{sub_type}_{days}_{amount}"),
@@ -380,25 +325,18 @@ def choose_payment_method(sub_type, days, amount):
 
 def lite_duration_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
-    lite_1day_count = get_key_count("lite", 1)
-    lite_7day_count = get_key_count("lite", 7)
-    
     markup.add(
-        InlineKeyboardButton(f"1 день - {PRICES['lite_1day']}₽ ({lite_1day_count} шт)", callback_data="select_lite_1day"),
-        InlineKeyboardButton(f"7 дней - {PRICES['lite_7day']}₽ ({lite_7day_count} шт)", callback_data="select_lite_7day")
+        InlineKeyboardButton(f"1 день - {PRICES['lite_1day']}₽ ({get_key_count('lite', 1)} шт)", callback_data="select_lite_1day"),
+        InlineKeyboardButton(f"7 дней - {PRICES['lite_7day']}₽ ({get_key_count('lite', 7)} шт)", callback_data="select_lite_7day")
     )
     return markup
 
 def vip_duration_buttons():
     markup = InlineKeyboardMarkup(row_width=2)
-    vip_1day_count = get_key_count("vip", 1)
-    vip_7day_count = get_key_count("vip", 7)
-    vip_14day_count = get_key_count("vip", 14)
-    
     markup.add(
-        InlineKeyboardButton(f"1 день - {PRICES['vip_1day']}₽ ({vip_1day_count} шт)", callback_data="select_vip_1day"),
-        InlineKeyboardButton(f"7 дней - {PRICES['vip_7day']}₽ ({vip_7day_count} шт)", callback_data="select_vip_7day"),
-        InlineKeyboardButton(f"14 дней - {PRICES['vip_14day']}₽ ({vip_14day_count} шт)", callback_data="select_vip_14day")
+        InlineKeyboardButton(f"1 день - {PRICES['vip_1day']}₽ ({get_key_count('vip', 1)} шт)", callback_data="select_vip_1day"),
+        InlineKeyboardButton(f"7 дней - {PRICES['vip_7day']}₽ ({get_key_count('vip', 7)} шт)", callback_data="select_vip_7day"),
+        InlineKeyboardButton(f"14 дней - {PRICES['vip_14day']}₽ ({get_key_count('vip', 14)} шт)", callback_data="select_vip_14day")
     )
     return markup
 
@@ -472,26 +410,27 @@ def process_review_rating(call: CallbackQuery):
         del user_states[call.from_user.id]
 
 # ============================================
-# ДОНАТЫ
+# ДОНАТЫ (БЕЗ КОМИССИИ)
 # ============================================
 @bot.message_handler(func=lambda message: message.text == "❤️ Пожертвовать")
 def donate_menu(message: Message):
     text = (
         "❤️ **ПОДДЕРЖАТЬ ПРОЕКТ**\n\n"
         "Вы можете помочь развитию проекта.\n\n"
-        "💰 Минимальная сумма: 10₽\n\n"
+        "💰 Минимальная сумма: 10₽\n"
+        "✨ **Комиссия не взимается**\n\n"
         "Выберите способ оплаты:"
     )
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("💳 Platega (без комиссии)", callback_data="donate_platega"),
-        InlineKeyboardButton("🪙 Криптовалюта USDT (+ комиссия)", callback_data="donate_crypto")
+        InlineKeyboardButton("💳 Platega (СБП/Карта)", callback_data="donate_platega"),
+        InlineKeyboardButton("🪙 Криптовалюта USDT", callback_data="donate_crypto")
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "donate_platega")
 def donate_platega(call: CallbackQuery):
-    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму пожертвования (в рублях):**\n\nМинимальная сумма: 10₽", parse_mode="Markdown")
+    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму (в рублях):**\n\nМинимальная: 10₽", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_donate_platega)
 
 def process_donate_platega(message: Message):
@@ -500,26 +439,19 @@ def process_donate_platega(message: Message):
         if amount < 10:
             bot.send_message(message.chat.id, "❌ Минимальная сумма 10₽")
             return
-        
         result = create_platega_payment(amount, message.from_user.id, "donate")
-        
         if result["success"]:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=result["payment_url"]))
-            bot.send_message(
-                message.chat.id,
-                f"❤️ **Спасибо за поддержку!**\n\n💰 Сумма: {amount}₽\n\n👇 Нажмите для оплаты",
-                parse_mode="Markdown",
-                reply_markup=markup
-            )
+            bot.send_message(message.chat.id, f"❤️ **Спасибо!**\n💰 {amount}₽\n👇 Оплатите", parse_mode="Markdown", reply_markup=markup)
         else:
-            bot.send_message(message.chat.id, f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}")
+            bot.send_message(message.chat.id, f"❌ Ошибка: {result.get('error')}")
     except ValueError:
         bot.send_message(message.chat.id, "❌ Введите число!")
 
 @bot.callback_query_handler(func=lambda call: call.data == "donate_crypto")
 def donate_crypto(call: CallbackQuery):
-    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму пожертвования (в рублях):**\n\nМинимальная сумма: 10₽", parse_mode="Markdown")
+    msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму (в рублях):**\n\nМинимальная: 10₽\n✨ Без комиссии", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_donate_crypto)
 
 def process_donate_crypto(message: Message):
@@ -529,7 +461,8 @@ def process_donate_crypto(message: Message):
             bot.send_message(message.chat.id, "❌ Минимальная сумма 10₽")
             return
         
-        result = create_cryptobot_payment(rub_amount, message.from_user.id, "donate")
+        usdt_amount, usdt_rate = calculate_crypto_amount_no_markup(rub_amount)
+        result = create_cryptobot_payment(usdt_amount, message.from_user.id, f"Пожертвование {rub_amount}₽", f"donate_{message.from_user.id}")
         
         if result["success"]:
             markup = InlineKeyboardMarkup()
@@ -537,17 +470,16 @@ def process_donate_crypto(message: Message):
             bot.send_message(
                 message.chat.id,
                 f"❤️ **Спасибо за поддержку!**\n\n"
-                f"💰 Сумма пожертвования: {rub_amount}₽\n"
-                f"📈 Комиссия {result['markup_percent']}%: {rub_amount * result['markup_percent'] / 100:.2f}₽\n"
-                f"💵 **Итого к оплате:** {result['rub_with_markup']:.2f}₽\n"
-                f"🪙 **В USDT:** {result['usdt_amount']} USDT\n"
-                f"💱 Курс: {result['usdt_rate']}₽/USDT\n\n"
-                f"👇 Нажмите для оплаты криптовалютой",
+                f"💰 Сумма: {rub_amount}₽\n"
+                f"🪙 К оплате: {usdt_amount} USDT\n"
+                f"💱 Курс: {usdt_rate}₽/USDT\n"
+                f"✨ Комиссия: 0%\n\n"
+                f"👇 Нажмите для оплаты",
                 parse_mode="Markdown",
                 reply_markup=markup
             )
         else:
-            bot.send_message(message.chat.id, f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}")
+            bot.send_message(message.chat.id, f"❌ Ошибка: {result.get('error')}")
     except ValueError:
         bot.send_message(message.chat.id, "❌ Введите число!")
 
@@ -559,7 +491,7 @@ def start_command(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     db.add_user(user_id, username)
-    bot.send_message(user_id, "🤖 Добро пожаловать!\n\n🌟 Бот для продажи подписок LITE и VIP.\n💳 Оплата через Platega (без комиссии) или криптовалютой USDT (с комиссией)", reply_markup=main_menu(is_admin(user_id)))
+    bot.send_message(user_id, "🤖 Добро пожаловать!\n\n🌟 Бот для продажи подписок LITE и VIP.\n💳 Оплата через Platega или криптовалютой USDT", reply_markup=main_menu(is_admin(user_id)))
 
 @bot.message_handler(func=lambda message: message.text == "👤 Мой профиль")
 def profile(message: Message):
@@ -582,35 +514,23 @@ def buy_subscription(message: Message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_lite")
 def choose_lite(call: CallbackQuery):
-    bot.edit_message_text("🌟 **LITE подписка**\n\n(количество ключей указано в скобках)", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
+    bot.edit_message_text("🌟 **LITE подписка**\n(количество ключей в скобках)", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=lite_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data == "choose_vip")
 def choose_vip(call: CallbackQuery):
-    bot.edit_message_text("👑 **VIP подписка**\n\n(количество ключей указано в скобках)", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
+    bot.edit_message_text("👑 **VIP подписка**\n(количество ключей в скобках)", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=vip_duration_buttons())
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("select_lite_"))
 def select_lite_duration(call: CallbackQuery):
     days = 1 if call.data == "select_lite_1day" else 7
     amount = PRICES[f"lite_{days}day"]
-    bot.edit_message_text(
-        f"🌟 **LITE подписка {days} день/дней**\n\n💰 Цена: {amount}₽\n\nВыберите способ оплаты:",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode="Markdown",
-        reply_markup=choose_payment_method("lite", days, amount)
-    )
+    bot.edit_message_text(f"🌟 LITE {days} д.\n💰 {amount}₽\nВыберите способ оплаты:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=choose_payment_method("lite", days, amount))
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("select_vip_"))
 def select_vip_duration(call: CallbackQuery):
     days = int(call.data.split("_")[2].replace("day", ""))
     amount = PRICES[f"vip_{days}day"]
-    bot.edit_message_text(
-        f"👑 **VIP подписка {days} день/дней**\n\n💰 Цена: {amount}₽\n\nВыберите способ оплаты:",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode="Markdown",
-        reply_markup=choose_payment_method("vip", days, amount)
-    )
+    bot.edit_message_text(f"👑 VIP {days} д.\n💰 {amount}₽\nВыберите способ оплаты:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=choose_payment_method("vip", days, amount))
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("pay_platega_"))
 def process_platega_payment(call: CallbackQuery):
@@ -623,37 +543,17 @@ def process_platega_payment(call: CallbackQuery):
         bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
         return
     
-    order_id = f"{sub_type}_{days}day"
-    result = create_platega_payment(amount, call.from_user.id, order_id)
-    
+    result = create_platega_payment(amount, call.from_user.id, f"{sub_type}_{days}day")
     if result["success"]:
-        user_states[f"payment_{result['transaction_id']}"] = {
-            "user_id": call.from_user.id,
-            "sub_type": sub_type,
-            "days": days,
-            "key": reserved_key,
-            "amount": amount,
-            "method": "platega"
-        }
-        
+        user_states[f"payment_{result['transaction_id']}"] = {"user_id": call.from_user.id, "sub_type": sub_type, "days": days, "key": reserved_key}
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=result["payment_url"]))
         markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_platega_{result['transaction_id']}"))
         markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_platega_{result['transaction_id']}"))
-        
-        bot.edit_message_text(
-            f"💳 **Счет на {amount}₽**\n\n"
-            f"📦 {sub_type.upper()} {days} д.\n"
-            f"⏰ Ключ зарезервирован на 30 минут\n\n"
-            f"👇 Нажмите для оплаты",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
+        bot.edit_message_text(f"💳 Счет на {amount}₽\n📦 {sub_type.upper()} {days} д.\n⏰ Ключ зарезервирован на 30 минут", call.message.chat.id, call.message.message_id, reply_markup=markup)
     else:
         release_key(call.from_user.id)
-        bot.edit_message_text(f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"❌ Ошибка: {result.get('error')}", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("pay_crypto_"))
 def process_crypto_payment(call: CallbackQuery):
@@ -666,76 +566,37 @@ def process_crypto_payment(call: CallbackQuery):
         bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
         return
     
-    result = create_cryptobot_payment(rub_amount, call.from_user.id, f"{sub_type}_{days}day")
+    usdt_amount, usdt_rate, markup_percent, final_rub = calculate_crypto_amount_with_markup(rub_amount)
+    result = create_cryptobot_payment(usdt_amount, call.from_user.id, f"Подписка {sub_type} {days}д (цена {rub_amount}₽ + комиссия {markup_percent}% = {final_rub:.2f}₽)", f"user_{call.from_user.id}_{sub_type}_{days}day")
     
     if result["success"]:
-        user_states[f"crypto_{result['transaction_id']}"] = {
-            "user_id": call.from_user.id,
-            "sub_type": sub_type,
-            "days": days,
-            "key": reserved_key,
-            "rub_amount": rub_amount,
-            "usdt_amount": result['usdt_amount'],
-            "method": "crypto"
-        }
-        
+        user_states[f"crypto_{result['transaction_id']}"] = {"user_id": call.from_user.id, "sub_type": sub_type, "days": days, "key": reserved_key}
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🪙 ОПЛАТИТЬ USDT", url=result["payment_url"]))
         markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_crypto_{result['transaction_id']}"))
         markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_crypto_{result['transaction_id']}"))
-        
         bot.edit_message_text(
-            f"🪙 **Крипто-счет**\n\n"
-            f"💰 Цена подписки: {rub_amount}₽\n"
-            f"📈 Комиссия {result['markup_percent']}%: {rub_amount * result['markup_percent'] / 100:.2f}₽\n"
-            f"💵 **Итого к оплате:** {result['rub_with_markup']:.2f}₽\n"
-            f"🪙 **В USDT:** {result['usdt_amount']} USDT\n"
-            f"💱 Курс: {result['usdt_rate']}₽/USDT\n"
-            f"📦 {sub_type.upper()} {days} д.\n"
-            f"⏰ Ключ зарезервирован на 30 минут\n\n"
-            f"👇 Нажмите для оплаты",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode="Markdown",
-            reply_markup=markup
+            f"🪙 **Крипто-счет**\n\n💰 Цена: {rub_amount}₽\n📈 Комиссия {markup_percent}%: {rub_amount * markup_percent / 100:.2f}₽\n💵 Итого: {final_rub:.2f}₽\n🪙 {usdt_amount} USDT\n💱 Курс: {usdt_rate}₽\n📦 {sub_type.upper()} {days} д.\n⏰ Ключ зарезервирован на 30 минут",
+            call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup
         )
     else:
         release_key(call.from_user.id)
-        bot.edit_message_text(f"❌ Ошибка криптоплатежа: {result.get('error', 'Попробуйте Platega')}", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"❌ Ошибка криптоплатежа", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_platega_"))
 def check_platega(call: CallbackQuery):
     transaction_id = call.data.split("_")[2]
     status = check_platega_payment(transaction_id)
-    
     if status == "CONFIRMED":
-        payment_data = user_states.get(f"payment_{transaction_id}", {})
-        key = payment_data.get("key")
-        sub_type = payment_data.get("sub_type")
-        days = payment_data.get("days")
-        user_id = payment_data.get("user_id")
-        
-        if key and user_id:
-            db.activate_subscription(user_id, sub_type, days)
-            group_link = create_group_link(sub_type)
-            group_text = f"\n\n📦 **Ссылка для входа в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
-            
-            bot.send_message(
-                user_id,
-                f"✅ **Оплата подтверждена!**\n\n"
-                f"🔑 Ваш ключ: `{key}`\n"
-                f"📦 Подписка: {sub_type.upper()} {days} д.\n"
-                f"{group_text}\n\n"
-                f"Сохраните ключ!",
-                parse_mode="Markdown"
-            )
-        
+        data = user_states.get(f"payment_{transaction_id}", {})
+        if data.get("key") and data.get("user_id"):
+            db.activate_subscription(data["user_id"], data["sub_type"], data["days"])
+            group_link = create_group_link(data["sub_type"])
+            bot.send_message(data["user_id"], f"✅ Оплата подтверждена!\n🔑 Ключ: `{data['key']}`\n📦 Подписка: {data['sub_type'].upper()} {data['days']} д.\n📦 Ссылка на группу: {group_link}" if group_link else "")
         bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
         bot.send_message(call.message.chat.id, "✅ Подписка активирована!")
-        release_key(user_id)
+        release_key(data.get("user_id"))
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        if f"payment_{transaction_id}" in user_states:
-            del user_states[f"payment_{transaction_id}"]
     else:
         bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
 
@@ -743,35 +604,16 @@ def check_platega(call: CallbackQuery):
 def check_crypto(call: CallbackQuery):
     invoice_id = call.data.split("_")[2]
     status = check_cryptobot_payment(invoice_id)
-    
     if status == "paid":
-        payment_data = user_states.get(f"crypto_{invoice_id}", {})
-        key = payment_data.get("key")
-        sub_type = payment_data.get("sub_type")
-        days = payment_data.get("days")
-        user_id = payment_data.get("user_id")
-        
-        if key and user_id:
-            db.activate_subscription(user_id, sub_type, days)
-            group_link = create_group_link(sub_type)
-            group_text = f"\n\n📦 **Ссылка для входа в группу:**\n{group_link}\n⚠️ Ссылка одноразовая!" if group_link else ""
-            
-            bot.send_message(
-                user_id,
-                f"✅ **Оплата подтверждена!**\n\n"
-                f"🔑 Ваш ключ: `{key}`\n"
-                f"📦 Подписка: {sub_type.upper()} {days} д.\n"
-                f"{group_text}\n\n"
-                f"Сохраните ключ!",
-                parse_mode="Markdown"
-            )
-        
+        data = user_states.get(f"crypto_{invoice_id}", {})
+        if data.get("key") and data.get("user_id"):
+            db.activate_subscription(data["user_id"], data["sub_type"], data["days"])
+            group_link = create_group_link(data["sub_type"])
+            bot.send_message(data["user_id"], f"✅ Оплата подтверждена!\n🔑 Ключ: `{data['key']}`\n📦 Подписка: {data['sub_type'].upper()} {data['days']} д.\n📦 Ссылка на группу: {group_link}" if group_link else "")
         bot.answer_callback_query(call.id, "✅ Оплата подтверждена!")
         bot.send_message(call.message.chat.id, "✅ Подписка активирована!")
-        release_key(user_id)
+        release_key(data.get("user_id"))
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        if f"crypto_{invoice_id}" in user_states:
-            del user_states[f"crypto_{invoice_id}"]
     else:
         bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
 
@@ -781,8 +623,6 @@ def cancel_platega(call: CallbackQuery):
     release_key(call.from_user.id)
     bot.answer_callback_query(call.id, "❌ Оплата отменена")
     bot.edit_message_text("❌ Оплата отменена", call.message.chat.id, call.message.message_id)
-    if f"payment_{transaction_id}" in user_states:
-        del user_states[f"payment_{transaction_id}"]
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_crypto_"))
 def cancel_crypto(call: CallbackQuery):
@@ -790,38 +630,17 @@ def cancel_crypto(call: CallbackQuery):
     release_key(call.from_user.id)
     bot.answer_callback_query(call.id, "❌ Оплата отменена")
     bot.edit_message_text("❌ Оплата отменена", call.message.chat.id, call.message.message_id)
-    if f"crypto_{invoice_id}" in user_states:
-        del user_states[f"crypto_{invoice_id}"]
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_choice")
 def back_to_choice(call: CallbackQuery):
-    bot.edit_message_text("🌟 **Выберите тип подписки:**", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=choose_subscription_type())
+    bot.edit_message_text("🌟 Выберите тип подписки:", call.message.chat.id, call.message.message_id, reply_markup=choose_subscription_type())
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Информация")
 def info_menu(message: Message):
     markup_percent = get_markup_percent()
     usdt_rate = get_usdt_rate()
-    text = (
-        "ℹ️ **ИНФОРМАЦИЯ**\n\n"
-        "🤖 **Бот для продажи подписок LITE и VIP**\n\n"
-        "💳 **Способы оплаты:**\n"
-        "• Platega (СБП, банковские карты) - **без комиссии**\n"
-        f"• Криптовалюта USDT (через CryptoBot) - **комиссия {markup_percent}%**\n\n"
-        f"💱 **Актуальный курс USDT:** {usdt_rate}₽\n\n"
-        "📌 **Как пользоваться:**\n"
-        "• Купите подписку через меню\n"
-        "• Выберите удобный способ оплаты\n"
-        "• После оплаты вы получите ключ и ссылку на группу\n\n"
-        "📞 **КОНТАКТЫ:**\n"
-        f"• Техподдержка: @{SUPPORT_USERNAME}\n"
-        f"• Основной канал: {MAIN_CHANNEL}\n"
-        f"• Отзывы: {REVIEWS_CHANNEL}\n\n"
-        "⚖️ **ДОКУМЕНТЫ:**\n"
-        "• Политика конфиденциальности\n"
-        "• Пользовательское соглашение\n\n"
-        "📄 Нажмите на кнопки ниже для просмотра"
-    )
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
+    text = f"ℹ️ **ИНФОРМАЦИЯ**\n\n🤖 Бот для продажи подписок LITE и VIP\n\n💳 **Способы оплаты:**\n• Platega (СБП/карты) - без комиссии\n• Криптовалюта USDT - комиссия {markup_percent}% (только на подписки)\n\n💱 Курс USDT: {usdt_rate}₽\n\n📞 **КОНТАКТЫ:**\n• Поддержка: @{SUPPORT_USERNAME}\n• Канал: {MAIN_CHANNEL}\n• Отзывы: {REVIEWS_CHANNEL}"
+    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=info_buttons())
 
 # ============================================
 # АДМИН-ПАНЕЛЬ
@@ -833,122 +652,93 @@ def admin_panel(message: Message):
 @bot.message_handler(commands=['addadmin'])
 def add_admin_command(message: Message):
     if not is_main_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав!")
+        bot.send_message(message.chat.id, "❌ Нет прав!")
         return
-    
     try:
         parts = message.text.split()
         if len(parts) != 2:
-            bot.send_message(message.chat.id, "❌ Используйте: `/addadmin 123456789`", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ /addadmin 123456789")
             return
         new_admin_id = int(parts[1])
         cursor = db.connection.cursor()
         cursor.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (new_admin_id,))
         db.connection.commit()
-        bot.send_message(message.chat.id, f"✅ Пользователь `{new_admin_id}` назначен администратором!", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ Админ {new_admin_id} добавлен")
     except:
         bot.send_message(message.chat.id, "❌ Ошибка!")
 
 @bot.message_handler(commands=['removeadmin'])
 def remove_admin_command(message: Message):
     if not is_main_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав!")
+        bot.send_message(message.chat.id, "❌ Нет прав!")
         return
     try:
         parts = message.text.split()
         if len(parts) != 2:
-            bot.send_message(message.chat.id, "❌ Используйте: `/removeadmin 123456789`", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ /removeadmin 123456789")
             return
         remove_id = int(parts[1])
         if remove_id == MAIN_ADMIN_ID:
-            bot.send_message(message.chat.id, "❌ Нельзя удалить главного администратора!")
+            bot.send_message(message.chat.id, "❌ Нельзя удалить главного админа")
             return
         cursor = db.connection.cursor()
         cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (remove_id,))
         db.connection.commit()
-        bot.send_message(message.chat.id, f"✅ Пользователь `{remove_id}` удален из администраторов!", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ Админ {remove_id} удален")
     except:
         bot.send_message(message.chat.id, "❌ Ошибка!")
 
 @bot.message_handler(func=lambda message: message.text == "👥 Управление админами" and is_admin(message.from_user.id))
 def manage_admins_menu(message: Message):
     if not is_main_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ Только главный администратор!")
+        bot.send_message(message.chat.id, "❌ Только главный админ")
         return
     cursor = db.connection.cursor()
     cursor.execute("SELECT user_id, username FROM users WHERE is_admin = 1")
     admins = cursor.fetchall()
-    text = "👥 **Список администраторов:**\n\n"
+    text = "👥 **Администраторы:**\n\n"
     for admin in admins:
-        admin_id, username = admin
-        mark = "⭐" if admin_id == MAIN_ADMIN_ID else ""
-        text += f"• `{admin_id}` - @{username or 'без username'} {mark}\n"
-    text += "\n**Команды:**\n`/addadmin ID` - добавить\n`/removeadmin ID` - удалить"
+        mark = "⭐" if admin[0] == MAIN_ADMIN_ID else ""
+        text += f"• `{admin[0]}` - @{admin[1] or 'без username'} {mark}\n"
+    text += "\n/addadmin ID - добавить\n/removeadmin ID - удалить"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📊 Крипто-настройки" and is_admin(message.from_user.id))
 def crypto_settings_menu(message: Message):
     markup_percent = get_markup_percent()
     usdt_rate = get_usdt_rate()
-    text = (
-        "🪙 **КРИПТО-НАСТРОЙКИ**\n\n"
-        f"📈 **Текущая комиссия:** {markup_percent}%\n"
-        f"💱 **Актуальный курс USDT:** {usdt_rate}₽ (автоматически)\n\n"
-        "**Изменить комиссию:**\n"
-        "Отправьте: `/set_markup 35`\n\n"
-        "**Проверить курс:**\n"
-        "Отправьте: `/check_rate`"
-    )
+    text = f"🪙 **Крипто-настройки**\n\n📈 Комиссия: {markup_percent}%\n💱 Курс USDT: {usdt_rate}₽\n\nИзменить комиссию: `/set_markup 35`"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['set_markup'])
 def set_markup_command(message: Message):
     if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав!")
+        bot.send_message(message.chat.id, "❌ Нет прав!")
         return
-    
     try:
         parts = message.text.split()
         if len(parts) != 2:
-            bot.send_message(message.chat.id, "❌ Используйте: `/set_markup 35`", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ /set_markup 35")
             return
-        
         new_markup = int(parts[1])
         if new_markup < 0 or new_markup > 100:
-            bot.send_message(message.chat.id, "❌ Комиссия должна быть от 0 до 100%")
+            bot.send_message(message.chat.id, "❌ Комиссия от 0 до 100%")
             return
-        
         set_markup_percent(new_markup)
-        bot.send_message(message.chat.id, f"✅ **Комиссия изменена на {new_markup}%**\n\nТеперь криптоплатежи будут с комиссией {new_markup}%", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ Комиссия изменена на {new_markup}%")
     except:
-        bot.send_message(message.chat.id, "❌ Ошибка! Используйте: `/set_markup 35`", parse_mode="Markdown")
-
-@bot.message_handler(commands=['check_rate'])
-def check_rate_command(message: Message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "❌ У вас нет прав!")
-        return
-    
-    usdt_rate = get_usdt_rate()
-    bot.send_message(message.chat.id, f"💱 **Актуальный курс USDT:** {usdt_rate} ₽\n\n*Курс обновляется автоматически раз в 5 минут*", parse_mode="Markdown")
+        bot.send_message(message.chat.id, "❌ Ошибка!")
 
 @bot.message_handler(func=lambda message: message.text == "➕ Добавить ключи (массово)" and is_admin(message.from_user.id))
 def add_keys_batch(message: Message):
-    text = (
-        "📝 **Массовое добавление ключей**\n\n"
-        "Формат:\n`+l1d` - LITE 1 день\n`+l7d` - LITE 7 дней\n"
-        "`+v1d` - VIP 1 день\n`+v7d` - VIP 7 дней\n`+v14d` - VIP 14 дней\n\n"
-        "Пример:\n`+v1d`\n`KEY1`\n`KEY2`\n`KEY3`"
-    )
+    text = "📝 **Массовое добавление**\n\nФормат:\n`+l1d` - LITE 1д\n`+l7d` - LITE 7д\n`+v1d` - VIP 1д\n`+v7d` - VIP 7д\n`+v14d` - VIP 14д\n\nПример:\n`+v1d`\n`KEY1`\n`KEY2`"
     msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_add_keys)
 
 def process_add_keys(message: Message):
     lines = message.text.strip().split('\n')
-    current_type = None
-    current_days = None
-    added = 0
-    stats = {"lite_1d": 0, "lite_7d": 0, "vip_1d": 0, "vip_7d": 0, "vip_14d": 0}
+    current_type, current_days = None, None
+    added, stats = 0, {"lite_1d": 0, "lite_7d": 0, "vip_1d": 0, "vip_7d": 0, "vip_14d": 0}
     type_map = {
         "+l1d": ("lite", 1, "lite_1d"), "+l7d": ("lite", 7, "lite_7d"),
         "+v1d": ("vip", 1, "vip_1d"), "+v7d": ("vip", 7, "vip_7d"), "+v14d": ("vip", 14, "vip_14d")
@@ -962,89 +752,64 @@ def process_add_keys(message: Message):
             if db.add_key(line, current_type, current_days):
                 added += 1
                 stats[stat_key] += 1
-    result = f"✅ **Добавлено ключей: {added}**\n\n📊 Статистика:\n"
-    result += f"• LITE 1д: {stats['lite_1d']}\n• LITE 7д: {stats['lite_7d']}\n"
-    result += f"• VIP 1д: {stats['vip_1d']}\n• VIP 7д: {stats['vip_7d']}\n• VIP 14д: {stats['vip_14d']}"
+    result = f"✅ Добавлено: {added}\n📊 LITE 1д: {stats['lite_1d']}, LITE 7д: {stats['lite_7d']}\nVIP 1д: {stats['vip_1d']}, VIP 7д: {stats['vip_7d']}, VIP 14д: {stats['vip_14d']}"
     bot.send_message(message.chat.id, result, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "🗑 Удалить ключи (массово)" and is_admin(message.from_user.id))
 def delete_keys_batch(message: Message):
-    text = (
-        "🗑 **Массовое удаление ключей**\n\n"
-        "Вариант 1 - удалить все ключи типа:\n`-l1d` - LITE 1д\n`-l7d` - LITE 7д\n"
-        "`-v1d` - VIP 1д\n`-v7d` - VIP 7д\n`-v14d` - VIP 14д\n\n"
-        "Вариант 2 - удалить конкретные ключи:\n`KEY1`\n`KEY2`\n`KEY3`"
-    )
+    text = "🗑 **Массовое удаление**\n\nВариант 1 - удалить все ключи типа:\n`-l1d` - LITE 1д\n`-l7d` - LITE 7д\n`-v1d` - VIP 1д\n`-v7d` - VIP 7д\n`-v14d` - VIP 14д\n\nВариант 2 - удалить конкретные:\n`KEY1`\n`KEY2`"
     msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_delete_keys)
 
 def process_delete_keys(message: Message):
     lines = message.text.strip().split('\n')
-    deleted = 0
-    stats = {"lite_1d": 0, "lite_7d": 0, "vip_1d": 0, "vip_7d": 0, "vip_14d": 0}
     type_map = {
-        "-l1d": ("lite", 1, "lite_1d"), "-l7d": ("lite", 7, "lite_7d"),
-        "-v1d": ("vip", 1, "vip_1d"), "-v7d": ("vip", 7, "vip_7d"), "-v14d": ("vip", 14, "vip_14d")
+        "-l1d": ("lite", 1), "-l7d": ("lite", 7),
+        "-v1d": ("vip", 1), "-v7d": ("vip", 7), "-v14d": ("vip", 14)
     }
     first_line = lines[0].strip().lower()
     if first_line in type_map:
-        target_type, target_days, stat_key = type_map[first_line]
+        target_type, target_days = type_map[first_line]
+        deleted = 0
         all_keys = db.get_all_keys()
         for key in all_keys:
             if key[2] == target_type and key[3] == target_days and key[4] == 0:
                 db.delete_key(key[0])
                 deleted += 1
-                stats[stat_key] += 1
-        result = f"✅ **Удалено ключей типа {target_type.upper()} {target_days}д: {deleted}**"
-        bot.send_message(message.chat.id, result, parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ Удалено {deleted} ключей типа {target_type.upper()} {target_days}д")
         return
     keys_to_delete = set(lines)
-    all_keys = db.get_all_keys()
-    for key in all_keys:
+    deleted = 0
+    for key in db.get_all_keys():
         if key[1] in keys_to_delete and key[4] == 0:
             db.delete_key(key[0])
             deleted += 1
-            stat_key = f"{key[2]}_{key[3]}d".replace("lite", "lite").replace("vip", "vip")
-            stats[stat_key] = stats.get(stat_key, 0) + 1
-            keys_to_delete.discard(key[1])
-    result = f"✅ **Удалено ключей: {deleted}**\n\n📊 Статистика:\n"
-    for k, v in stats.items():
-        if v > 0:
-            result += f"• {k}: {v}\n"
-    bot.send_message(message.chat.id, result, parse_mode="Markdown")
+    bot.send_message(message.chat.id, f"✅ Удалено {deleted} ключей")
 
 @bot.message_handler(func=lambda message: message.text == "💰 Изменить цены" and is_admin(message.from_user.id))
 def change_prices_menu(message: Message):
-    text = "💰 **Текущие цены:**\n\n"
-    text += f"• LITE 1д: {PRICES['lite_1day']}₽\n• LITE 7д: {PRICES['lite_7day']}₽\n"
-    text += f"• VIP 1д: {PRICES['vip_1day']}₽\n• VIP 7д: {PRICES['vip_7day']}₽\n• VIP 14д: {PRICES['vip_14day']}₽\n\n"
-    text += "**Изменить цену:**\n`lite_1day 150`"
+    text = f"💰 **Текущие цены:**\n\nLITE 1д: {PRICES['lite_1day']}₽\nLITE 7д: {PRICES['lite_7day']}₽\nVIP 1д: {PRICES['vip_1day']}₽\nVIP 7д: {PRICES['vip_7day']}₽\nVIP 14д: {PRICES['vip_14day']}₽\n\nИзменить: `lite_1day 150`"
     msg = bot.send_message(message.chat.id, text, parse_mode="Markdown")
     bot.register_next_step_handler(msg, update_price)
 
 def update_price(message: Message):
     try:
-        text = message.text.strip()
-        if ' ' in text:
-            key, new_price = text.split(' ')
-        else:
-            bot.send_message(message.chat.id, "❌ Формат: `lite_1day 150`", parse_mode="Markdown")
-            return
+        key, new_price = message.text.strip().split()
         new_price = int(new_price)
         if key in PRICES:
             PRICES[key] = new_price
             set_price(key, new_price)
-            bot.send_message(message.chat.id, f"✅ Цена {key} = {new_price}₽", parse_mode="Markdown")
+            bot.send_message(message.chat.id, f"✅ Цена {key} = {new_price}₽")
         else:
-            bot.send_message(message.chat.id, "❌ Неверный ключ!", parse_mode="Markdown")
+            bot.send_message(message.chat.id, "❌ Неверный ключ")
     except:
-        bot.send_message(message.chat.id, "❌ Ошибка!", parse_mode="Markdown")
+        bot.send_message(message.chat.id, "❌ Формат: `lite_1day 150`")
 
 @bot.message_handler(func=lambda message: message.text == "📋 Список ключей" and is_admin(message.from_user.id))
 def list_keys(message: Message):
     all_keys = db.get_all_keys()
     if not all_keys:
-        bot.send_message(message.chat.id, "📭 **Нет ключей**", parse_mode="Markdown")
+        bot.send_message(message.chat.id, "📭 Нет ключей")
         return
     lite_1d = [k for k in all_keys if k[2] == "lite" and k[3] == 1 and k[4] == 0]
     lite_7d = [k for k in all_keys if k[2] == "lite" and k[3] == 7 and k[4] == 0]
@@ -1052,10 +817,7 @@ def list_keys(message: Message):
     vip_7d = [k for k in all_keys if k[2] == "vip" and k[3] == 7 and k[4] == 0]
     vip_14d = [k for k in all_keys if k[2] == "vip" and k[3] == 14 and k[4] == 0]
     used = [k for k in all_keys if k[4] == 1]
-    text = "🔑 **СТАТИСТИКА КЛЮЧЕЙ:**\n\n"
-    text += f"🌟 LITE 1д: {len(lite_1d)}\n🌟 LITE 7д: {len(lite_7d)}\n"
-    text += f"👑 VIP 1д: {len(vip_1d)}\n👑 VIP 7д: {len(vip_7d)}\n👑 VIP 14д: {len(vip_14d)}\n"
-    text += f"❌ Использовано: {len(used)}\n📊 Всего: {len(all_keys)}"
+    text = f"🔑 **Статистика:**\n\nLITE 1д: {len(lite_1d)}\nLITE 7д: {len(lite_7d)}\nVIP 1д: {len(vip_1d)}\nVIP 7д: {len(vip_7d)}\nVIP 14д: {len(vip_14d)}\nИспользовано: {len(used)}\nВсего: {len(all_keys)}"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "📊 Статистика" and is_admin(message.from_user.id))
@@ -1068,20 +830,20 @@ def show_stats(message: Message):
     total_success = cursor.fetchone()[0] or 0
     cursor.execute("SELECT COUNT(*) FROM payments WHERE status = 'pending'")
     total_pending = cursor.fetchone()[0] or 0
-    text = f"📊 **СТАТИСТИКА**\n\n💰 Доход: {total_income}₽\n✅ Успешно: {total_success}\n⏳ В ожидании: {total_pending}\n👥 Пользователей: {stats['total_users']}\n✅ Активных: {stats['active_subs']}"
+    text = f"📊 **Статистика**\n\n💰 Доход: {total_income}₽\n✅ Успешно: {total_success}\n⏳ В ожидании: {total_pending}\n👥 Пользователей: {stats['total_users']}\n✅ Активных: {stats['active_subs']}"
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == "◀️ Назад в меню")
 def back_to_main(message: Message):
-    bot.send_message(message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(message.from_user.id)))
+    bot.send_message(message.chat.id, "🏠 Главное меню", reply_markup=main_menu(is_admin(message.from_user.id)))
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
 def back_to_menu(call: CallbackQuery):
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-    bot.send_message(call.message.chat.id, "🏠 **Главное меню**", parse_mode="Markdown", reply_markup=main_menu(is_admin(call.from_user.id)))
+    bot.send_message(call.message.chat.id, "🏠 Главное меню", reply_markup=main_menu(is_admin(call.from_user.id)))
 
 # ============================================
-# FLASK ПРИЛОЖЕНИЕ ДЛЯ ВЕБХУКОВ
+# FLASK ПРИЛОЖЕНИЕ
 # ============================================
 @app.route('/', methods=['GET'])
 def index():
@@ -1090,60 +852,48 @@ def index():
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_webhook():
     try:
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
+        update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         bot.process_new_updates([update])
         return "OK", 200
-    except Exception as e:
-        print(f"Ошибка: {e}")
+    except:
         return "Error", 200
 
 @app.route('/webhook', methods=['POST'])
 def platega_webhook():
     try:
         data = request.json
-        status = data.get('status')
-        payload = data.get('payload')
-        if status == "CONFIRMED" and payload and payload.startswith('user'):
-            parts = payload.split('_')
+        if data.get('status') == "CONFIRMED" and data.get('payload', '').startswith('user'):
+            parts = data['payload'].split('_')
             if len(parts) >= 3:
                 user_id = int(parts[1])
                 order_parts = parts[2].split('_')
                 sub_type = order_parts[0]
                 days = int(order_parts[1].replace('day', ''))
                 db.activate_subscription(user_id, sub_type, days)
-                group_link = create_group_link(sub_type)
-                group_text = f"\n\n📦 Ссылка на группу: {group_link}" if group_link else ""
-                bot.send_message(user_id, f"✅ Оплата подтверждена!\n🔑 Подписка: {sub_type.upper()} {days} д.{group_text}")
+                bot.send_message(user_id, f"✅ Оплата подтверждена!\n📦 {sub_type.upper()} {days} д.\n📦 Ссылка на группу: {create_group_link(sub_type)}")
         return jsonify({"status": "ok"}), 200
-    except Exception as e:
+    except:
         return jsonify({"status": "error"}), 500
 
 @app.route('/crypto_webhook', methods=['POST'])
 def crypto_webhook():
     try:
         data = request.json
-        print(f"CryptoBot webhook: {data}")
-        if data.get("payload"):
-            payload = data.get("payload")
-            if payload.startswith('user'):
-                parts = payload.split('_')
-                if len(parts) >= 3:
-                    user_id = int(parts[1])
-                    order_parts = parts[2].split('_')
-                    sub_type = order_parts[0]
-                    days = int(order_parts[1].replace('day', ''))
-                    db.activate_subscription(user_id, sub_type, days)
-                    group_link = create_group_link(sub_type)
-                    group_text = f"\n\n📦 Ссылка на группу: {group_link}" if group_link else ""
-                    bot.send_message(user_id, f"✅ Оплата подтверждена!\n🔑 Подписка: {sub_type.upper()} {days} д.{group_text}")
+        if data.get('payload', '').startswith('user'):
+            parts = data['payload'].split('_')
+            if len(parts) >= 4:
+                user_id = int(parts[1])
+                sub_type = parts[2]
+                days = int(parts[3].replace('day', ''))
+                db.activate_subscription(user_id, sub_type, days)
+                bot.send_message(user_id, f"✅ Оплата подтверждена!\n📦 {sub_type.upper()} {days} д.\n📦 Ссылка на группу: {create_group_link(sub_type)}")
         return jsonify({"ok": True}), 200
-    except Exception as e:
+    except:
         return jsonify({"ok": False}), 200
 
 @app.route('/payment_success', methods=['GET'])
 def payment_success():
-    return "Оплата успешно проведена! Можете вернуться в бота.", 200
+    return "Оплата успешно проведена!", 200
 
 @app.route('/payment_cancel', methods=['GET'])
 def payment_cancel():
@@ -1153,16 +903,14 @@ def payment_cancel():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    # Инициализируем курс при старте
     get_usdt_rate()
-    
     print("=" * 60)
     print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
-    print(f"📡 Callback URL (Platega): {RAILWAY_URL}/webhook")
-    print(f"🪙 CryptoBot URL: {RAILWAY_URL}/crypto_webhook")
-    print(f"💰 Текущая комиссия: {get_markup_percent()}%")
-    print(f"💱 Текущий курс USDT: {get_usdt_rate()}₽")
+    print(f"📡 Platega: {RAILWAY_URL}/webhook")
+    print(f"🪙 CryptoBot: {RAILWAY_URL}/crypto_webhook")
+    print(f"💰 Комиссия: {get_markup_percent()}% (только подписки)")
+    print(f"💱 Курс USDT: {get_usdt_rate()}₽")
     print("=" * 60)
     
     try:
