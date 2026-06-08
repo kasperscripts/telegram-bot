@@ -19,9 +19,9 @@ PLATEGA_MERCHANT_ID = "709e8d20-e5f9-4ad0-8bae-311460ff7991"
 PLATEGA_API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWGFWgpSXtgsrGYTjsXh7KEF8tDHdxLAvFW6XCNqG7xJ2"
 PLATEGA_API_URL = "https://app.platega.io"
 
-# @send (криптоплатежи) настройки
-SEND_BOT_TOKEN = "589863:AA1iJtmR2y4tzd1hKzPKd4d184n9CGAyRRc"
-SEND_API_URL = "https://api.send.tg"
+# CryptoBot настройки
+CRYPTOBOT_TOKEN = "589863:AA1iJtmR2y4tzd1hKzPKd4d184n9CGAyRRc"
+CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 
 # ГРУППЫ ДЛЯ ПОДПИСЧИКОВ
 VIP_GROUP_ID = -1003709565134
@@ -184,60 +184,60 @@ def check_platega_payment(transaction_id):
         return None
 
 # ============================================
-# ПЛАТЕЖИ ЧЕРЕЗ @send (КРИПТОВАЛЮТА)
+# ПЛАТЕЖИ ЧЕРЕЗ CRYPTOBOT
 # ============================================
-def create_send_payment(amount, user_id, order_id):
+def create_cryptobot_payment(amount, user_id, order_id):
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {SEND_BOT_TOKEN}"
+        "Crypto-Pay-API-Token": CRYPTOBOT_TOKEN
     }
     
     data = {
+        "asset": "USDT",
         "amount": float(amount),
-        "currency": "TON",
         "description": f"Подписка {order_id}",
-        "external_id": f"{user_id}_{order_id}_{int(datetime.now().timestamp())}",
-        "success_url": f"{RAILWAY_URL}/payment_success",
-        "cancel_url": f"{RAILWAY_URL}/payment_cancel"
+        "paid_btn_name": "callback",
+        "paid_btn_url": f"{RAILWAY_URL}/payment_success",
+        "payload": f"user_{user_id}_{order_id}"
     }
     
     try:
-        response = requests.post(f"{SEND_API_URL}/v1/invoice", headers=headers, json=data, timeout=30)
-        print(f"Ответ @send: {response.status_code} - {response.text}")
+        response = requests.post(f"{CRYPTOBOT_API_URL}/createInvoice", headers=headers, json=data, timeout=30)
+        print(f"Ответ CryptoBot: {response.status_code} - {response.text}")
         
         if response.status_code == 200:
             result = response.json()
-            return {
-                "success": True,
-                "payment_url": result.get("url") or result.get("invoice_url"),
-                "transaction_id": result.get("id") or result.get("invoice_id"),
-                "status": result.get("status")
-            }
-        else:
-            return {"success": False, "error": f"Ошибка {response.status_code}: {response.text}"}
+            if result.get("ok"):
+                invoice = result.get("result")
+                return {
+                    "success": True,
+                    "payment_url": invoice.get("pay_url"),
+                    "transaction_id": str(invoice.get("invoice_id")),
+                    "status": invoice.get("status")
+                }
+        return {"success": False, "error": f"Ошибка {response.status_code}: {response.text}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def check_send_payment(invoice_id):
-    headers = {
-        "Authorization": f"Bearer {SEND_BOT_TOKEN}"
-    }
+def check_cryptobot_payment(invoice_id):
+    headers = {"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN}
     
     try:
-        response = requests.get(f"{SEND_API_URL}/v1/invoice/{invoice_id}", headers=headers, timeout=30)
+        response = requests.get(f"{CRYPTOBOT_API_URL}/getInvoices", headers=headers, params={"invoice_ids": invoice_id}, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
-            status = result.get("status")
-            if status == "paid":
-                return "paid"
-            elif status == "active":
-                return "pending"
-            else:
-                return status
+            if result.get("ok"):
+                invoices = result.get("result", {}).get("items", [])
+                if invoices:
+                    status = invoices[0].get("status")
+                    if status == "paid":
+                        return "paid"
+                    elif status == "active":
+                        return "pending"
         return None
     except Exception as e:
-        print(f"Ошибка проверки @send: {e}")
+        print(f"Ошибка проверки: {e}")
         return None
 
 # Создаем таблицу settings
@@ -285,7 +285,7 @@ def choose_payment_method(sub_type, days, amount):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("💳 Platega (СБП/Карта)", callback_data=f"pay_platega_{sub_type}_{days}_{amount}"),
-        InlineKeyboardButton("🪙 Криптовалюта (@send)", callback_data=f"pay_send_{sub_type}_{days}_{amount}"),
+        InlineKeyboardButton("🪙 Криптовалюта USDT", callback_data=f"pay_crypto_{sub_type}_{days}_{amount}"),
         InlineKeyboardButton("◀️ Назад", callback_data="back_to_choice")
     )
     return markup
@@ -396,7 +396,7 @@ def donate_menu(message: Message):
     markup = InlineKeyboardMarkup()
     markup.add(
         InlineKeyboardButton("💳 Platega", callback_data="donate_platega"),
-        InlineKeyboardButton("🪙 Криптовалюта (@send)", callback_data="donate_send")
+        InlineKeyboardButton("🪙 Криптовалюта USDT", callback_data="donate_crypto")
     )
     bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
@@ -428,26 +428,26 @@ def process_donate_platega(message: Message):
     except ValueError:
         bot.send_message(message.chat.id, "❌ Введите число!")
 
-@bot.callback_query_handler(func=lambda call: call.data == "donate_send")
-def donate_send(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data == "donate_crypto")
+def donate_crypto(call: CallbackQuery):
     msg = bot.send_message(call.message.chat.id, "💰 **Введите сумму пожертвования (в USD):**\n\nМинимальная сумма: 1$", parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_donate_send)
+    bot.register_next_step_handler(msg, process_donate_crypto)
 
-def process_donate_send(message: Message):
+def process_donate_crypto(message: Message):
     try:
         amount = float(message.text.strip())
         if amount < 1:
             bot.send_message(message.chat.id, "❌ Минимальная сумма 1$")
             return
         
-        result = create_send_payment(amount, message.from_user.id, "donate")
+        result = create_cryptobot_payment(amount, message.from_user.id, "donate")
         
         if result["success"]:
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🪙 ОПЛАТИТЬ КРИПТОЙ", url=result["payment_url"]))
+            markup.add(InlineKeyboardButton("🪙 ОПЛАТИТЬ USDT", url=result["payment_url"]))
             bot.send_message(
                 message.chat.id,
-                f"❤️ **Спасибо за поддержку!**\n\n💰 Сумма: {amount}$\n\n👇 Нажмите для оплаты криптовалютой",
+                f"❤️ **Спасибо за поддержку!**\n\n💰 Сумма: {amount} USDT\n\n👇 Нажмите для оплаты криптовалютой",
                 parse_mode="Markdown",
                 reply_markup=markup
             )
@@ -464,7 +464,7 @@ def start_command(message: Message):
     user_id = message.from_user.id
     username = message.from_user.username or f"user_{user_id}"
     db.add_user(user_id, username)
-    bot.send_message(user_id, "🤖 Добро пожаловать!\n\n🌟 Бот для продажи подписок LITE и VIP.\n💳 Оплата через Platega или криптовалютой", reply_markup=main_menu(is_admin(user_id)))
+    bot.send_message(user_id, "🤖 Добро пожаловать!\n\n🌟 Бот для продажи подписок LITE и VIP.\n💳 Оплата через Platega или криптовалютой USDT", reply_markup=main_menu(is_admin(user_id)))
 
 @bot.message_handler(func=lambda message: message.text == "👤 Мой профиль")
 def profile(message: Message):
@@ -560,39 +560,39 @@ def process_platega_payment(call: CallbackQuery):
         release_key(call.from_user.id)
         bot.edit_message_text(f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", call.message.chat.id, call.message.message_id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_send_"))
-def process_send_payment(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_crypto_"))
+def process_crypto_payment(call: CallbackQuery):
     _, _, sub_type, days, amount = call.data.split("_")
     days = int(days)
-    amount = float(amount)
+    amount_usd = float(amount) / 100  # Допустим, курс 100₽ = 1 USDT (настройте под свой курс)
     
     reserved_key = reserve_key(sub_type, days, call.from_user.id)
     if not reserved_key:
         bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
         return
     
-    result = create_send_payment(amount, call.from_user.id, f"{sub_type}_{days}day")
+    result = create_cryptobot_payment(amount_usd, call.from_user.id, f"{sub_type}_{days}day")
     
     if result["success"]:
-        user_states[f"send_{result['transaction_id']}"] = {
+        user_states[f"crypto_{result['transaction_id']}"] = {
             "user_id": call.from_user.id,
             "sub_type": sub_type,
             "days": days,
             "key": reserved_key,
-            "amount": amount,
-            "method": "send"
+            "amount": amount_usd,
+            "method": "crypto"
         }
         
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🪙 ОПЛАТИТЬ КРИПТОЙ", url=result["payment_url"]))
-        markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_send_{result['transaction_id']}"))
-        markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_send_{result['transaction_id']}"))
+        markup.add(InlineKeyboardButton("🪙 ОПЛАТИТЬ USDT", url=result["payment_url"]))
+        markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_crypto_{result['transaction_id']}"))
+        markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_crypto_{result['transaction_id']}"))
         
         bot.edit_message_text(
-            f"🪙 **Крипто-счет на {amount}$**\n\n"
+            f"🪙 **Крипто-счет на {amount_usd} USDT**\n\n"
             f"📦 {sub_type.upper()} {days} д.\n"
             f"⏰ Ключ зарезервирован на 30 минут\n\n"
-            f"👇 Нажмите для оплаты криптовалютой",
+            f"👇 Нажмите для оплаты",
             call.message.chat.id,
             call.message.message_id,
             parse_mode="Markdown",
@@ -638,13 +638,13 @@ def check_platega(call: CallbackQuery):
     else:
         bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("check_send_"))
-def check_send(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_crypto_"))
+def check_crypto(call: CallbackQuery):
     invoice_id = call.data.split("_")[2]
-    status = check_send_payment(invoice_id)
+    status = check_cryptobot_payment(invoice_id)
     
     if status == "paid":
-        payment_data = user_states.get(f"send_{invoice_id}", {})
+        payment_data = user_states.get(f"crypto_{invoice_id}", {})
         key = payment_data.get("key")
         sub_type = payment_data.get("sub_type")
         days = payment_data.get("days")
@@ -669,8 +669,8 @@ def check_send(call: CallbackQuery):
         bot.send_message(call.message.chat.id, "✅ Подписка активирована!")
         release_key(user_id)
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        if f"send_{invoice_id}" in user_states:
-            del user_states[f"send_{invoice_id}"]
+        if f"crypto_{invoice_id}" in user_states:
+            del user_states[f"crypto_{invoice_id}"]
     else:
         bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
 
@@ -683,14 +683,14 @@ def cancel_platega(call: CallbackQuery):
     if f"payment_{transaction_id}" in user_states:
         del user_states[f"payment_{transaction_id}"]
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_send_"))
-def cancel_send(call: CallbackQuery):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_crypto_"))
+def cancel_crypto(call: CallbackQuery):
     invoice_id = call.data.split("_")[2]
     release_key(call.from_user.id)
     bot.answer_callback_query(call.id, "❌ Оплата отменена")
     bot.edit_message_text("❌ Оплата отменена", call.message.chat.id, call.message.message_id)
-    if f"send_{invoice_id}" in user_states:
-        del user_states[f"send_{invoice_id}"]
+    if f"crypto_{invoice_id}" in user_states:
+        del user_states[f"crypto_{invoice_id}"]
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_choice")
 def back_to_choice(call: CallbackQuery):
@@ -703,7 +703,7 @@ def info_menu(message: Message):
         "🤖 **Бот для продажи подписок LITE и VIP**\n\n"
         "💳 **Способы оплаты:**\n"
         "• Platega (СБП, банковские карты)\n"
-        "• Криптовалюта (через @send)\n\n"
+        "• Криптовалюта USDT (через CryptoBot)\n\n"
         "📌 **Как пользоваться:**\n"
         "• Купите подписку через меню\n"
         "• Выберите удобный способ оплаты\n"
@@ -969,6 +969,29 @@ def platega_webhook():
     except Exception as e:
         return jsonify({"status": "error"}), 500
 
+@app.route('/crypto_webhook', methods=['POST'])
+def crypto_webhook():
+    try:
+        data = request.json
+        print(f"CryptoBot webhook: {data}")
+        # Обработка вебхука от CryptoBot
+        if data.get("payload"):
+            payload = data.get("payload")
+            if payload.startswith('user'):
+                parts = payload.split('_')
+                if len(parts) >= 3:
+                    user_id = int(parts[1])
+                    order_parts = parts[2].split('_')
+                    sub_type = order_parts[0]
+                    days = int(order_parts[1].replace('day', ''))
+                    db.activate_subscription(user_id, sub_type, days)
+                    group_link = create_group_link(sub_type)
+                    group_text = f"\n\n📦 Ссылка на группу: {group_link}" if group_link else ""
+                    bot.send_message(user_id, f"✅ Оплата подтверждена!\n🔑 Подписка: {sub_type.upper()} {days} д.{group_text}")
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        return jsonify({"ok": False}), 200
+
 @app.route('/payment_success', methods=['GET'])
 def payment_success():
     return "Оплата успешно проведена! Можете вернуться в бота.", 200
@@ -985,6 +1008,7 @@ if __name__ == '__main__':
     print("🚀 БОТ ЗАПУЩЕН")
     print(f"🤖 Бот: @KeeperMag_bot")
     print(f"📡 Callback URL: {RAILWAY_URL}/webhook")
+    print(f"🪙 CryptoBot: {RAILWAY_URL}/crypto_webhook")
     print("=" * 60)
     
     try:
