@@ -194,22 +194,23 @@ def create_send_payment(amount, user_id, order_id):
     
     data = {
         "amount": float(amount),
-        "currency": "USD",
+        "currency": "TON",
         "description": f"Подписка {order_id}",
-        "user_id": user_id,
+        "external_id": f"{user_id}_{order_id}_{int(datetime.now().timestamp())}",
         "success_url": f"{RAILWAY_URL}/payment_success",
         "cancel_url": f"{RAILWAY_URL}/payment_cancel"
     }
     
     try:
         response = requests.post(f"{SEND_API_URL}/v1/invoice", headers=headers, json=data, timeout=30)
+        print(f"Ответ @send: {response.status_code} - {response.text}")
         
         if response.status_code == 200:
             result = response.json()
             return {
                 "success": True,
-                "payment_url": result.get("url"),
-                "transaction_id": result.get("id"),
+                "payment_url": result.get("url") or result.get("invoice_url"),
+                "transaction_id": result.get("id") or result.get("invoice_id"),
                 "status": result.get("status")
             }
         else:
@@ -227,9 +228,16 @@ def check_send_payment(invoice_id):
         
         if response.status_code == 200:
             result = response.json()
-            return result.get("status")
+            status = result.get("status")
+            if status == "paid":
+                return "paid"
+            elif status == "active":
+                return "pending"
+            else:
+                return status
         return None
-    except:
+    except Exception as e:
+        print(f"Ошибка проверки @send: {e}")
         return None
 
 # Создаем таблицу settings
@@ -515,7 +523,6 @@ def process_platega_payment(call: CallbackQuery):
     days = int(days)
     amount = float(amount)
     
-    # Резервируем ключ
     reserved_key = reserve_key(sub_type, days, call.from_user.id)
     if not reserved_key:
         bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
@@ -559,7 +566,6 @@ def process_send_payment(call: CallbackQuery):
     days = int(days)
     amount = float(amount)
     
-    # Резервируем ключ
     reserved_key = reserve_key(sub_type, days, call.from_user.id)
     if not reserved_key:
         bot.answer_callback_query(call.id, "❌ Ключи закончились!", show_alert=True)
@@ -594,7 +600,7 @@ def process_send_payment(call: CallbackQuery):
         )
     else:
         release_key(call.from_user.id)
-        bot.edit_message_text(f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"❌ Ошибка криптоплатежа: {result.get('error', 'Попробуйте Platega')}", call.message.chat.id, call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_platega_"))
 def check_platega(call: CallbackQuery):
