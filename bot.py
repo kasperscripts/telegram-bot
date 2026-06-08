@@ -20,7 +20,7 @@ PLATEGA_API_SECRET = "b4gxyG1yLHYrz3AvG0QEOjxw5BuKaWie3JkP3p25ExhEX6AFLbf2ZqPMWG
 PLATEGA_API_URL = "https://app.platega.io"
 
 # @send (криптоплатежи) настройки
-SEND_BOT_TOKEN = "589863:AAjkZOERTELeWF2ZS4H0DTr9mRL0n5aqcZc"
+SEND_BOT_TOKEN = "589863:AA1iJtmR2y4tzd1hKzPKd4d184n9CGAyRRc"
 SEND_API_URL = "https://api.send.tg"
 
 # ГРУППЫ ДЛЯ ПОДПИСЧИКОВ
