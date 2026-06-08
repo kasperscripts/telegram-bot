@@ -227,7 +227,7 @@ def check_send_payment(invoice_id):
         
         if response.status_code == 200:
             result = response.json()
-            return result.get("status")  # "active", "paid", "expired", "cancelled"
+            return result.get("status")
         return None
     except:
         return None
@@ -536,8 +536,8 @@ def process_platega_payment(call: CallbackQuery):
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("💳 ОПЛАТИТЬ", url=result["payment_url"]))
-        markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_{result['transaction_id']}"))
-        markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_{result['transaction_id']}"))
+        markup.add(InlineKeyboardButton("🔄 ПРОВЕРИТЬ", callback_data=f"check_platega_{result['transaction_id']}"))
+        markup.add(InlineKeyboardButton("❌ ОТМЕНА", callback_data=f"cancel_platega_{result['transaction_id']}"))
         
         bot.edit_message_text(
             f"💳 **Счет на {amount}₽**\n\n"
@@ -596,9 +596,9 @@ def process_send_payment(call: CallbackQuery):
         release_key(call.from_user.id)
         bot.edit_message_text(f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}", call.message.chat.id, call.message.message_id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_platega_"))
 def check_platega(call: CallbackQuery):
-    transaction_id = call.data.split("_")[1]
+    transaction_id = call.data.split("_")[2]
     status = check_platega_payment(transaction_id)
     
     if status == "CONFIRMED":
@@ -668,9 +668,9 @@ def check_send(call: CallbackQuery):
     else:
         bot.answer_callback_query(call.id, "⏳ Еще не оплачено", show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_platega_"))
 def cancel_platega(call: CallbackQuery):
-    transaction_id = call.data.split("_")[1]
+    transaction_id = call.data.split("_")[2]
     release_key(call.from_user.id)
     bot.answer_callback_query(call.id, "❌ Оплата отменена")
     bot.edit_message_text("❌ Оплата отменена", call.message.chat.id, call.message.message_id)
@@ -714,7 +714,7 @@ def info_menu(message: Message):
     bot.send_message(message.chat.id, text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=info_buttons())
 
 # ============================================
-# АДМИН-ПАНЕЛЬ (сокращенно)
+# АДМИН-ПАНЕЛЬ
 # ============================================
 @bot.message_handler(func=lambda message: message.text == "⚙️ Админ-панель" and is_admin(message.from_user.id))
 def admin_panel(message: Message):
@@ -724,7 +724,9 @@ def admin_panel(message: Message):
 def add_admin_command(message: Message):
     if not is_main_admin(message.from_user.id):
         bot.send_message(message.chat.id, "❌ У вас нет прав!")
-        return    try:
+        return
+    
+    try:
         parts = message.text.split()
         if len(parts) != 2:
             bot.send_message(message.chat.id, "❌ Используйте: `/addadmin 123456789`", parse_mode="Markdown")
