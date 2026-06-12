@@ -402,7 +402,7 @@ async def menu_info(callback: CallbackQuery):
         f"• Отзывы: https://t.me/KeeperOtzivi\n\n"
         f"{emoji(EMOJI['important'], '⚖')} <b>ДОКУМЕНТЫ:</b>\n"
         f"• <a href='https://telegra.ph/Politika-konfidencialnosti-04-01-26'>Политика конфиденциальности</a>\n"
-        f"• <a href='https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19'>Пользовательское соглашение</a>\n\n"
+        f"• <a href='https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19'>Пользовательское соглашение</a>"
     )
     await callback.message.edit_text(info_text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu_main", icon_custom_emoji_id=EMOJI["arrow_back"])]]))
     await callback.answer()
@@ -738,7 +738,6 @@ async def manual_deposit_screenshot(message: Message, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("manual_confirm_"))
 async def manual_confirm_payment(callback: CallbackQuery):
-    """Подтверждение ручной оплаты админом"""
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет прав администратора", show_alert=True)
         return
@@ -780,7 +779,6 @@ async def manual_confirm_payment(callback: CallbackQuery):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("manual_reject_"))
 async def manual_reject_payment(callback: CallbackQuery):
-    """Отклонение ручной оплаты админом"""
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ У вас нет прав администратора", show_alert=True)
         return
@@ -940,17 +938,12 @@ async def buy_product(callback: CallbackQuery):
         referrer = await get_referrer(callback.from_user.id)
         if referrer:
             config = await get_referral_config()
-            if config["enabled"]:
+            if config.get("enabled", True):
                 if not await has_user_purchased(callback.from_user.id):
                     if config["bonus_type"] == "rubles":
                         bonus = config["bonus_value"]
                         await update_user_balance(referrer, bonus)
                         await add_purchase(referrer, f"Реферальный бонус за приглашение {callback.from_user.id}", bonus)
-                    else:
-                        bonus = int(product["price"] * config["bonus_value"] / 100)
-                        if bonus > 0:
-                            await update_user_balance(referrer, bonus)
-                            await add_purchase(referrer, f"Реферальный бонус {config['bonus_value']}% от покупки {callback.from_user.id}", bonus)
         
         invite_link = await create_vip_link(callback.from_user.id, 30)
         vip_text = f"\n\n{emoji(EMOJI['verified'], '🔓')} <b>Доступ в VIP канал:</b> <a href='{invite_link}'>Нажмите для входа</a>" if invite_link else ""
@@ -1514,35 +1507,21 @@ async def admin_ref_config(callback: CallbackQuery, state: FSMContext):
         return
     
     config = await get_referral_config()
-    status = "🟢 Включена" if config["enabled"] else "🔴 Выключена"
     bonus_text = f"{config['bonus_value']} {'₽' if config['bonus_type'] == 'rubles' else '%'}"
     
     text = (
         f"{emoji(EMOJI['repeat'], '👥')} <b>Настройка реферальной системы</b>\n\n"
-        f"Статус: {status}\n"
         f"Награда: {bonus_text}\n\n"
         f"Выберите действие:"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Включить" if not config["enabled"] else "🔴 Выключить", callback_data="ref_toggle")],
         [InlineKeyboardButton(text="💰 Изменить награду", callback_data="ref_change_bonus")],
         [InlineKeyboardButton(text="Назад", callback_data="admin_panel")]
     ])
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "ref_toggle")
-async def ref_toggle(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа")
-        return
-    
-    config = await get_referral_config()
-    await update_referral_config("enabled", not config["enabled"])
-    
-    await admin_ref_config(callback, None)
 
 @dp.callback_query(lambda c: c.data == "ref_change_bonus")
 async def ref_change_bonus(callback: CallbackQuery, state: FSMContext):
@@ -1886,14 +1865,7 @@ def webhook():
 async def on_startup():
     await connect_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    webhook_url = f"{RAILWAY_URL}/webhook"
-    await bot.set_webhook(webhook_url)
-    print(f"Webhook установлен: {webhook_url}")
-
-async def on_shutdown():
-    await bot.delete_webhook()
-    await bot.session.close()
+    print("✅ Бот запущен, вебхук удалён")
 
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
@@ -1903,7 +1875,9 @@ async def main():
     
     thread = Thread(target=run_flask, daemon=True)
     thread.start()
+    print("✅ Flask сервер запущен на порту 8080")
     
+    print("🚀 Запуск polling...")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
