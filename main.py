@@ -403,7 +403,6 @@ async def menu_info(callback: CallbackQuery):
         f"{emoji(EMOJI['important'], '⚖')} <b>ДОКУМЕНТЫ:</b>\n"
         f"• <a href='https://telegra.ph/Politika-konfidencialnosti-04-01-26'>Политика конфиденциальности</a>\n"
         f"• <a href='https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19'>Пользовательское соглашение</a>\n\n"
-        f"{emoji('5199942808214976824', '🤖')} <b>Похожего бота можно заказать у @ZOJlOTOY</b>"
     )
     await callback.message.edit_text(info_text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu_main", icon_custom_emoji_id=EMOJI["arrow_back"])]]))
     await callback.answer()
