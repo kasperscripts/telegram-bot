@@ -519,18 +519,27 @@ async def deposit_amount(message: Message, state: FSMContext):
     await state.update_data(amount=amount)
     await state.set_state(DepositStates.waiting_method)
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"{emoji(EMOJI['crypto'], '🪙')} Crypto Pay", callback_data="deposit_method_crypto"),
-            InlineKeyboardButton(text=f"{emoji(EMOJI['sbp'], '💳')} Platega (СБП)", callback_data="deposit_method_platega")
-        ],
-        [
-            InlineKeyboardButton(text="📝 Ручной способ", callback_data="deposit_method_manual")
-        ],
-        [
-            InlineKeyboardButton(text="Назад", callback_data="menu_profile", icon_custom_emoji_id=EMOJI["arrow_back"])
-        ]
-    ])
+    shop_mode = await get_setting("shop_mode")
+    
+    if shop_mode == "auto":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text=f"{emoji(EMOJI['crypto'], '🪙')} Crypto Pay", callback_data="deposit_method_crypto"),
+                InlineKeyboardButton(text=f"{emoji(EMOJI['sbp'], '💳')} Platega (СБП)", callback_data="deposit_method_platega")
+            ],
+            [
+                InlineKeyboardButton(text="Назад", callback_data="menu_profile", icon_custom_emoji_id=EMOJI["arrow_back"])
+            ]
+        ])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📝 Ручной способ", callback_data="deposit_method_manual")
+            ],
+            [
+                InlineKeyboardButton(text="Назад", callback_data="menu_profile", icon_custom_emoji_id=EMOJI["arrow_back"])
+            ]
+        ])
     
     await message.answer(
         f"{emoji(EMOJI['dollar'], '💰')} <b>Выберите способ оплаты</b>\n\n"
@@ -691,10 +700,6 @@ async def manual_deposit_screenshot(message: Message, state: FSMContext):
     
     order_id = await create_manual_order(user_id, amount, "pending")
     
-    custom_text = await get_setting("custom_payment_text")
-    if not custom_text:
-        custom_text = "Переведите сумму на карту и отправьте скриншот чека"
-    
     user_text = (
         f"✅ <b>Заявка на пополнение отправлена!</b>\n\n"
         f"Сумма: <code>{amount} ₽</code>\n"
@@ -705,8 +710,6 @@ async def manual_deposit_screenshot(message: Message, state: FSMContext):
     await message.answer(user_text, parse_mode="HTML", reply_markup=get_main_keyboard())
     
     photo_file_id = message.photo[-1].file_id
-    file_info = await bot.get_file(photo_file_id)
-    file_bytes = await bot.download_file(file_info.file_path)
     
     admin_text = (
         f"🆕 <b>НОВАЯ ЗАЯВКА НА ПОПОЛНЕНИЕ</b>\n\n"
@@ -721,7 +724,7 @@ async def manual_deposit_screenshot(message: Message, state: FSMContext):
         try:
             await bot.send_photo(
                 admin_id,
-                photo=file_bytes,
+                photo=photo_file_id,
                 caption=admin_text,
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -938,12 +941,11 @@ async def buy_product(callback: CallbackQuery):
         referrer = await get_referrer(callback.from_user.id)
         if referrer:
             config = await get_referral_config()
-            if config.get("enabled", True):
-                if not await has_user_purchased(callback.from_user.id):
-                    if config["bonus_type"] == "rubles":
-                        bonus = config["bonus_value"]
-                        await update_user_balance(referrer, bonus)
-                        await add_purchase(referrer, f"Реферальный бонус за приглашение {callback.from_user.id}", bonus)
+            if not await has_user_purchased(callback.from_user.id):
+                if config["bonus_type"] == "rubles":
+                    bonus = config["bonus_value"]
+                    await update_user_balance(referrer, bonus)
+                    await add_purchase(referrer, f"Реферальный бонус за приглашение {callback.from_user.id}", bonus)
         
         invite_link = await create_vip_link(callback.from_user.id, 30)
         vip_text = f"\n\n{emoji(EMOJI['verified'], '🔓')} <b>Доступ в VIP канал:</b> <a href='{invite_link}'>Нажмите для входа</a>" if invite_link else ""
