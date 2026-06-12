@@ -72,8 +72,7 @@ async def connect_db():
         CREATE TABLE IF NOT EXISTS referral_config(
             id SERIAL PRIMARY KEY,
             bonus_type TEXT NOT NULL,
-            bonus_value INTEGER NOT NULL,
-            enabled BOOLEAN DEFAULT TRUE
+            bonus_value INTEGER NOT NULL
         )
         """)
         
@@ -116,7 +115,7 @@ async def connect_db():
         """)
         
         await conn.execute("""
-        INSERT INTO referral_config (bonus_type, bonus_value, enabled) VALUES ('rubles', 0, TRUE) ON CONFLICT DO NOTHING
+        INSERT INTO referral_config (bonus_type, bonus_value) VALUES ('rubles', 0) ON CONFLICT DO NOTHING
         """)
         
         await conn.execute("""
@@ -336,13 +335,11 @@ async def get_paid_referrals_count(user_id: int) -> int:
 
 async def get_referral_config():
     async with pool.acquire() as conn:
-        return await conn.fetchrow("SELECT bonus_type, bonus_value, enabled FROM referral_config LIMIT 1")
+        return await conn.fetchrow("SELECT bonus_type, bonus_value FROM referral_config LIMIT 1")
 
 async def update_referral_config(key: str, value):
     async with pool.acquire() as conn:
-        if key == "enabled":
-            await conn.execute("UPDATE referral_config SET enabled = $1", value)
-        elif key == "bonus_type":
+        if key == "bonus_type":
             await conn.execute("UPDATE referral_config SET bonus_type = $1", value)
         elif key == "bonus_value":
             await conn.execute("UPDATE referral_config SET bonus_value = $1", value)
