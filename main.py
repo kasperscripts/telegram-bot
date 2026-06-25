@@ -360,6 +360,187 @@ def get_admin_keyboard(shop_mode="auto"):
         ]
     ])
 
+pending_deposits = {} 
+
+@dp.message(ManualDepositStates.waiting_screenshot)
+async def process_manual_deposit_screenshot(message: Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("❌ Пожалуйста, отправьте скриншот чека", parse_mode="HTML")
+        return
+    
+    data = await state.get_data()
+    amount = data.get("amount")
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.first_name
+    payment_id = f"{user_id}_{amount}_{int(datetime.now().timestamp())}"
+    
+    # Сохраняем данные в словарь
+    pending_deposits[payment_id] = {
+        "user_id": user_id,
+        "amount": amount,
+        "username": username
+    }
+    
+    photo = message.photo[-1]
+    file_id = photo.file_id
+    
+    admin_text = (
+        f"🔔 <b>НОВЫЙ ЗАПРОС НА ПОПОЛНЕНИЕ</b>\n\n"
+        f"👤 Пользователь: @{username}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"💰 Сумма: <code>{amount} ₽</code>\n\n"
+        f"⏳ Статус: Ожидает проверки\n"
+        f"📝 ID запроса: <code>{payment_id}</code>"
+    )
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"admin_confirm_deposit_{payment_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_reject_deposit_{payment_id}")
+        ]
+    ])
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_photo(
+                admin_id,
+                photo=file_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=admin_kb
+            )
+        except Exception as e:
+            print(f"[ManualDeposit] Ошибка отправки админу {admin_id}: {e}")
+    
+    await message.answer(
+        f"✅ <b>Скриншот отправлен на проверку!</b>\n\n"
+        f"Сумма: <code>{amount} ₽</code>\n\n"
+        f"⏳ Администратор проверит оплату в ближайшее время.\n"
+        f"После подтверждения баланс будет автоматически пополнен.",
+        parse_mode="HTML",
+        reply_markup=get_profile_keyboard()
+    )
+    
+    try:
+        await message.delete()
+    except:
+        pass
+    
+    await state.clear()
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("admin_confirm_deposit_"))
+async def admin_confirm_deposit(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    
+    payment_id = callback.data.replace("admin_confirm_deposit_", "")
+    
+    if payment_id in processed_payments:
+        await callback.answer("Этот запрос уже обработан", show_alert=True)
+        return
+    
+    deposit_data = pending_deposits.get(payment_id)
+    if not deposit_data:
+        await callback.answer("❌ Данные о пополнении не найдены", show_alert=True)
+        return
+    
+    try:
+        user_id = deposit_data["user_id"]
+        amount = deposit_data["amount"]
+        username = deposit_data.get("username", "unknown")
+        
+        current_balance = await get_balance(user_id)
+        await update_user_balance(user_id, current_balance + amount)
+        
+        processed_payments.add(payment_id)
+        
+        new_caption = (
+            f"🔔 <b>НОВЫЙ ЗАПРОС НА ПОПОЛНЕНИЕ</b>\n\n"
+            f"👤 Пользователь: @{username}\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
+            f"💰 Сумма: <code>{amount} ₽</code>\n\n"
+            f"✅ <b>Статус: ПОДТВЕРЖДЕНО</b>\n"
+            f"Администратор: @{callback.from_user.username or callback.from_user.first_name}"
+        )
+        
+        await callback.message.edit_caption(
+            caption=new_caption,
+            parse_mode="HTML",
+            reply_markup=None
+        )
+        
+        await callback.answer(f"✅ Баланс пользователя {user_id} пополнен на {amount} ₽", show_alert=True)
+        
+        await bot.send_message(
+            user_id,
+            f"✅ <b>Ваше пополнение подтверждено!</b>\n\n"
+            f"💰 Сумма: <code>{amount} ₽</code>\n"
+            f"📊 Новый баланс: <code>{current_balance + amount} ₽</code>",
+            parse_mode="HTML"
+        )
+        
+        del pending_deposits[payment_id]
+        
+    except Exception as e:
+        print(f"[AdminConfirm] Ошибка: {e}")
+        await callback.answer(f"Ошибка: {str(e)}", show_alert=True)
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("admin_reject_deposit_"))
+async def admin_reject_deposit(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    
+    payment_id = callback.data.replace("admin_reject_deposit_", "")
+    
+    if payment_id in processed_payments:
+        await callback.answer("Этот запрос уже обработан", show_alert=True)
+        return
+    
+    deposit_data = pending_deposits.get(payment_id)
+    if not deposit_data:
+        await callback.answer("❌ Данные о пополнении не найдены", show_alert=True)
+        return
+    
+    try:
+        user_id = deposit_data["user_id"]
+        amount = deposit_data["amount"]
+        username = deposit_data.get("username", "unknown")
+        
+        processed_payments.add(payment_id)
+        
+        new_caption = (
+            f"🔔 <b>НОВЫЙ ЗАПРОС НА ПОПОЛНЕНИЕ</b>\n\n"
+            f"👤 Пользователь: @{username}\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
+            f"💰 Сумма: <code>{amount} ₽</code>\n\n"
+            f"❌ <b>Статус: ОТКЛОНЕНО</b>\n"
+            f"Администратор: @{callback.from_user.username or callback.from_user.first_name}"
+        )
+        
+        await callback.message.edit_caption(
+            caption=new_caption,
+            parse_mode="HTML",
+            reply_markup=None
+        )
+        
+        await callback.answer(f"❌ Запрос пользователя {user_id} отклонен", show_alert=True)
+        
+        await bot.send_message(
+            user_id,
+            f"❌ <b>Ваше пополнение отклонено!</b>\n\n"
+            f"💰 Сумма: <code>{amount} ₽</code>\n\n"
+            f"Пожалуйста, попробуйте снова или свяжитесь с поддержкой.",
+            parse_mode="HTML"
+        )
+        
+        del pending_deposits[payment_id]
+        
+    except Exception as e:
+        print(f"[AdminReject] Ошибка: {e}")
+        await callback.answer(f"Ошибка: {str(e)}", show_alert=True)
+
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
     args = message.text.split()
@@ -620,7 +801,6 @@ async def admin_confirm_deposit(callback: CallbackQuery):
         return
     
     try:
-        # Получаем данные из caption или из текста сообщения
         caption = callback.message.caption or ""
         user_id_match = re.search(r'ID: <code>(\d+)</code>', caption)
         amount_match = re.search(r'Сумма: <code>(\d+)</code>', caption)
@@ -637,23 +817,19 @@ async def admin_confirm_deposit(callback: CallbackQuery):
         
         processed_payments.add(payment_id)
         
-        # Обновляем caption с новым статусом
         new_caption = f"{caption}\n\n{emoji(EMOJI['check'], '✅')} <b>Статус: ПОДТВЕРЖДЕНО</b>\nАдминистратор: @{callback.from_user.username or callback.from_user.first_name}"
         
-        # Проверяем, есть ли у сообщения caption
         if callback.message.caption is not None:
             await callback.message.edit_caption(
                 caption=new_caption,
                 parse_mode="HTML"
             )
         else:
-            # Если caption нет, редактируем текст
             await callback.message.edit_text(
                 text=f"{callback.message.text or ''}\n\n{emoji(EMOJI['check'], '✅')} <b>Статус: ПОДТВЕРЖДЕНО</b>\nАдминистратор: @{callback.from_user.username or callback.from_user.first_name}",
                 parse_mode="HTML"
             )
         
-        # Убираем кнопки
         await callback.message.edit_reply_markup(reply_markup=None)
         
         await callback.answer(f"{emoji(EMOJI['check'], '✅')} Баланс пользователя {user_id} пополнен на {amount} ₽", show_alert=True)
