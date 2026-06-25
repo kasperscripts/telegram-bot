@@ -568,12 +568,10 @@ async def process_manual_deposit_screenshot(message: Message, state: FSMContext)
     # Короткий ID (8 символов) чтобы точно влез в callback_data
     order_id = str(uuid.uuid4())[:8]
     
+    # ИСПРАВЛЕНО: Используем готовую функцию save_pending_order вместо прямого запроса
     try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO pending_orders (user_id, order_id, amount) VALUES ($1, $2, $3)",
-                user_id, order_id, amount
-            )
+        from database import save_pending_order
+        await save_pending_order(user_id, order_id, amount)
         print(f"[ManualDeposit] Создан заказ {order_id} для user_id={user_id} на сумму {amount}")
     except Exception as e:
         print(f"[ManualDeposit] Ошибка сохранения в БД: {e}")
