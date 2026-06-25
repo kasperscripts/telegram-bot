@@ -1202,7 +1202,7 @@ async def process_keys_only(message: Message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "admin_manage_products")
 async def admin_manage_products(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer(f"{emoji(EMOJI['key'], '⛔')}")
+        await callback.answer("⛔ Доступ запрещен")
         return
     
     products = await get_all_products()
@@ -1247,7 +1247,7 @@ async def delete_product_cmd(message: Message):
 @dp.callback_query(lambda c: c.data == "admin_manage_keys")
 async def admin_manage_keys(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer(f"{emoji(EMOJI['key'], '⛔')}")
+        await callback.answer("⛔ Доступ запрещен")
         return
     
     products = await get_all_products()
@@ -1261,7 +1261,7 @@ async def admin_manage_keys(callback: CallbackQuery):
         return
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{p['name']} (ID: {p['id']})", callback_data=f"showkeys_{p['id']}")]
+        [InlineKeyboardButton(text=f"{p['name']} (ID: {p['id']})", callback_data=f"addkeys_{p['id']}")]
         for p in products
     ] + [[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]])
     
@@ -1557,7 +1557,7 @@ async def create_promocode_max_uses(message: Message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "admin_list_promocodes")
 async def admin_list_promocodes(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer(f"{emoji(EMOJI['key'], '⛔')}")
+        await callback.answer("⛔ Доступ запрещен")
         return
     
     promocodes = await get_all_promocodes()
@@ -1588,7 +1588,7 @@ async def admin_list_promocodes(callback: CallbackQuery):
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard(shop_mode))
     await callback.answer()
-
+    
 @dp.message(lambda m: m.text and m.text.startswith("/del_"))
 async def delete_promocode_cmd(message: Message):
     if not is_admin(message.from_user.id):
