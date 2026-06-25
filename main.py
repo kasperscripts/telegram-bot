@@ -32,7 +32,7 @@ from database import (
     get_referral_config, update_referral_config, add_balance, get_product_by_id,
     delete_product, get_keys_by_product, delete_key, mark_purchased, has_user_purchased,
     get_setting, update_setting, create_manual_order, get_manual_order, update_manual_order_status, get_pending_manual_orders,
-    get_crypto_fee, set_crypto_fee
+    get_crypto_fee, set_crypto_fee, update_order_status, get_pending_order, pool
 )
 
 EMOJI = {
@@ -77,6 +77,7 @@ EMOJI = {
     "edit": "5985774024968379294",
     "camera": "5870856037455630084",
     "cat": "5359444458930718519",
+    "trash": "5871053528743158021",
 }
 
 def emoji(sticker_id: str, fallback: str = "") -> str:
@@ -185,7 +186,7 @@ def create_crypto_invoice(amount_usd, order_id, user_id):
         "asset": "USDT",
         "amount": str(amount_usd),
         "description": f"Пополнение баланса #{order_id}",
-        "payload": f"user_{user_id}_{order_id}"
+        "payload": f"{user_id}_{order_id}"
     }
     
     try:
@@ -272,7 +273,7 @@ async def create_crypto_payment(desired_amount: int, order_id: str, user_id: int
     crypto_fee = await get_crypto_fee()
     
     if crypto_fee > 0:
-        amount_to_pay = int(desired_amount * 100 / (100 - crypto_fee))
+        amount_to_pay = round(desired_amount / (1 - crypto_fee / 100))
     else:
         amount_to_pay = desired_amount
     
@@ -287,18 +288,22 @@ async def create_crypto_payment(desired_amount: int, order_id: str, user_id: int
     print(f"[CryptoBot] Сумма в USDT: {usdt_amount}")
     print(f"[CryptoBot] ==================================")
     
+    pending_payments[user_id] = {
+        "amount": desired_amount,
+        "order_id": order_id,
+        "invoice_id": None,
+        "status": "pending"
+    }
+    
     result = create_crypto_invoice(usdt_amount, order_id, user_id)
     
     if result.get("success"):
-        pending_payments[user_id] = {
-            "amount": desired_amount,
-            "order_id": order_id,
-            "invoice_id": result["invoice_id"],
-            "status": "pending"
-        }
+        pending_payments[user_id]["invoice_id"] = result["invoice_id"]
         return result["payment_url"]
     else:
         print(f"[CryptoBot] Ошибка: {result.get('error')}")
+        if user_id in pending_payments:
+            del pending_payments[user_id]
         return None
 
 def get_main_keyboard():
@@ -559,7 +564,22 @@ async def process_manual_deposit_screenshot(message: Message, state: FSMContext)
     amount = data.get("amount")
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
-    payment_id = f"{user_id}_{amount}_{int(datetime.now().timestamp())}"
+    
+    # Короткий ID (8 символов) чтобы точно влез в callback_data
+    order_id = str(uuid.uuid4())[:8]
+    
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO pending_orders (user_id, order_id, amount) VALUES ($1, $2, $3)",
+                user_id, order_id, amount
+            )
+        print(f"[ManualDeposit] Создан заказ {order_id} для user_id={user_id} на сумму {amount}")
+    except Exception as e:
+        print(f"[ManualDeposit] Ошибка сохранения в БД: {e}")
+        await message.answer("Произошла ошибка при создании заявки. Пожалуйста, попробуйте позже.")
+        await state.clear()
+        return
     
     photo = message.photo[-1]
     file_id = photo.file_id
@@ -569,13 +589,15 @@ async def process_manual_deposit_screenshot(message: Message, state: FSMContext)
         f"{emoji(EMOJI['person'], '👤')} Пользователь: @{username}\n"
         f"{emoji(EMOJI['verified'], '🆔')} ID: <code>{user_id}</code>\n"
         f"{emoji(EMOJI['dollar'], '💰')} Сумма: <code>{amount} ₽</code>\n\n"
-        f"{emoji(EMOJI['clock'], '⏳')} Статус: Ожидает проверки"
+        f"{emoji(EMOJI['clock'], '⏳')} Статус: Ожидает проверки\n"
+        f"ID Заявки: <code>{order_id}</code>"
     )
     
+    # Короткий префикс чтобы избежать проблем с лимитом callback_data
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Подтвердить", callback_data=f"admin_confirm_deposit_{payment_id}", icon_custom_emoji_id=EMOJI["check"]),
-            InlineKeyboardButton(text="Отклонить", callback_data=f"admin_reject_deposit_{payment_id}", icon_custom_emoji_id=EMOJI["key"])
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"ok_{order_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"no_{order_id}")
         ]
     ])
     
@@ -607,98 +629,95 @@ async def process_manual_deposit_screenshot(message: Message, state: FSMContext)
     
     await state.clear()
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("admin_confirm_deposit_"))
+@dp.callback_query(lambda c: c.data and c.data.startswith("ok_"))
 async def admin_confirm_deposit(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer(f"{emoji(EMOJI['key'], '⛔')} Доступ запрещен", show_alert=True)
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
     
-    payment_id = callback.data.replace("admin_confirm_deposit_", "")
-    
-    if payment_id in processed_payments:
-        await callback.answer("Этот запрос уже обработан другим администратором", show_alert=True)
-        return
+    order_id = callback.data.replace("ok_", "")
     
     try:
-        caption = callback.message.caption
-        user_id_match = re.search(r'ID: <code>(\d+)</code>', caption)
-        amount_match = re.search(r'Сумма: <code>(\d+)</code>', caption)
-        
-        if not user_id_match or not amount_match:
-            await callback.answer("Ошибка: не удалось получить данные", show_alert=True)
+        order = await get_pending_order(order_id)
+            
+        if not order:
+            await callback.answer("❌ Заявка не найдена или уже обработана.", show_alert=True)
             return
         
-        user_id = int(user_id_match.group(1))
-        amount = int(amount_match.group(1))
+        user_id = order['user_id']
+        amount = order['amount']
         
         current_balance = await get_balance(user_id)
         await update_user_balance(user_id, current_balance + amount)
+        await update_order_status(order_id, "confirmed")
         
-        processed_payments.add(payment_id)
+        # Безопасно получаем caption (может быть None)
+        original_caption = callback.message.caption or ""
+        new_caption = original_caption + f"\n\n✅ <b>Статус: ПОДТВЕРЖДЕНО</b>\nАдминистратор: @{callback.from_user.username or callback.from_user.first_name}"
         
         await callback.message.edit_caption(
-            caption=f"{callback.message.caption}\n\n{emoji(EMOJI['check'], '✅')} <b>Статус: ПОДТВЕРЖДЕНО</b>\nАдминистратор: @{callback.from_user.username or callback.from_user.first_name}",
-            parse_mode="HTML"
+            caption=new_caption,
+            parse_mode="HTML",
+            reply_markup=None
         )
         
-        await callback.answer(f"{emoji(EMOJI['check'], '✅')} Баланс пользователя {user_id} пополнен на {amount} ₽", show_alert=True)
+        await callback.answer(f"✅ Баланс пользователя {user_id} пополнен на {amount} ₽", show_alert=True)
         
         await bot.send_message(
             user_id,
-            f"{emoji(EMOJI['check'], '✅')} <b>Ваше пополнение подтверждено!</b>\n\n"
-            f"{emoji(EMOJI['dollar'], '💰')} Сумма: <code>{amount} ₽</code>\n"
-            f"{emoji(EMOJI['almaz'], '📊')} Новый баланс: <code>{current_balance + amount} ₽</code>",
+            f"✅ <b>Ваше пополнение подтверждено!</b>\n\n"
+            f"💰 Сумма: <code>{amount} ₽</code>\n"
+            f"📊 Новый баланс: <code>{current_balance + amount} ₽</code>",
             parse_mode="HTML"
         )
         
     except Exception as e:
-        print(f"[AdminConfirm] Ошибка: {e}")
-        await callback.answer("Ошибка при обработке", show_alert=True)
+        print(f"[AdminConfirm] Ошибка при обработке заказа {order_id}: {e}")
+        await callback.answer(f"❌ Произошла внутренняя ошибка: {str(e)}", show_alert=True)
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("admin_reject_deposit_"))
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("no_"))
 async def admin_reject_deposit(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer(f"{emoji(EMOJI['key'], '⛔')} Доступ запрещен", show_alert=True)
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
-    
-    payment_id = callback.data.replace("admin_reject_deposit_", "")
-    
-    if payment_id in processed_payments:
-        await callback.answer("Этот запрос уже обработан другим администратором", show_alert=True)
-        return
+
+    order_id = callback.data.replace("no_", "")
     
     try:
-        caption = callback.message.caption
-        user_id_match = re.search(r'ID: <code>(\d+)</code>', caption)
-        amount_match = re.search(r'Сумма: <code>(\d+)</code>', caption)
-        
-        if not user_id_match or not amount_match:
-            await callback.answer("Ошибка: не удалось получить данные", show_alert=True)
+        order = await get_pending_order(order_id)
+            
+        if not order:
+            await callback.answer("❌ Заявка не найдена или уже обработана.", show_alert=True)
             return
         
-        user_id = int(user_id_match.group(1))
-        amount = int(amount_match.group(1))
+        user_id = order['user_id']
+        amount = order['amount']
         
-        processed_payments.add(payment_id)
+        await update_order_status(order_id, "rejected")
+        
+        original_caption = callback.message.caption or ""
+        new_caption = original_caption + f"\n\n❌ <b>Статус: ОТКЛОНЕНО</b>\nАдминистратор: @{callback.from_user.username or callback.from_user.first_name}"
         
         await callback.message.edit_caption(
-            caption=f"{callback.message.caption}\n\n{emoji(EMOJI['key'], '❌')} <b>Статус: ОТКЛОНЕНО</b>\nАдминистратор: @{callback.from_user.username or callback.from_user.first_name}",
-            parse_mode="HTML"
+            caption=new_caption,
+            parse_mode="HTML",
+            reply_markup=None
         )
         
-        await callback.answer(f"{emoji(EMOJI['key'], '❌')} Запрос пользователя {user_id} отклонен", show_alert=True)
+        await callback.answer(f"❌ Запрос пользователя {user_id} отклонен", show_alert=True)
         
         await bot.send_message(
             user_id,
-            f"{emoji(EMOJI['key'], '❌')} <b>Ваше пополнение отклонено!</b>\n\n"
-            f"{emoji(EMOJI['dollar'], '💰')} Сумма: <code>{amount} ₽</code>\n\n"
-            f"Пожалуйста, попробуйте снова.",
+            f"❌ <b>Ваше пополнение отклонено!</b>\n\n"
+            f"💰 Сумма: <code>{amount} ₽</code>\n\n"
+            f"Пожалуйста, попробуйте снова или свяжитесь с поддержкой.",
             parse_mode="HTML"
         )
         
     except Exception as e:
-        print(f"[AdminReject] Ошибка: {e}")
-        await callback.answer("Ошибка при обработке", show_alert=True)
+        print(f"[AdminReject] Ошибка при обработке заказа {order_id}: {e}")
+        await callback.answer(f"❌ Произошла внутренняя ошибка: {str(e)}", show_alert=True)
 
 @dp.message(DepositStates.waiting_amount)
 async def process_deposit_amount(message: Message, state: FSMContext):
@@ -722,7 +741,7 @@ async def process_deposit_amount(message: Message, state: FSMContext):
         crypto_fee = await get_crypto_fee()
         fee_text = ""
         if crypto_fee > 0:
-            amount_to_pay = int(amount * 100 / (100 - crypto_fee))
+            amount_to_pay = round(amount / (1 - crypto_fee / 100))
             fee_text = f"\n\n{emoji(EMOJI['important'], 'ℹ️')} <b>Комиссия:</b> {crypto_fee}%\nК оплате: <code>{amount_to_pay} ₽</code>\nНа баланс поступит: <code>{amount} ₽</code>"
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -787,7 +806,7 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
             f"{emoji(EMOJI['clock'], '⏳')} <b>Связываемся со шлюзом CryptoBot API...</b>\nПожалуйста, подождите пару секунд.", parse_mode="HTML"
         )
         crypto_fee = await get_crypto_fee()
-        amount_to_pay = int(amount * 100 / (100 - crypto_fee)) if crypto_fee > 0 else amount
+        amount_to_pay = round(amount / (1 - crypto_fee / 100)) if crypto_fee > 0 else amount
         payment_url = await create_crypto_payment(amount, order_id, user_id)
         method_name = "Crypto Pay (Криптовалюта)"
         
@@ -938,7 +957,6 @@ async def handle_buy(callback: CallbackQuery):
                         parse_mode="HTML"
                     )
     
-    from database import pool
     async with pool.acquire() as conn:
         keys_left = await conn.fetchval("SELECT COUNT(*) FROM keys_store WHERE product_id = $1 AND used = FALSE", product_id)
     
@@ -1058,7 +1076,7 @@ async def process_crypto_fee(message: Message, state: FSMContext):
         await message.answer(
             f"{emoji(EMOJI['check'], '✅')} <b>Комиссия успешно установлена!</b>\n\n"
             f"{emoji(EMOJI['crypto'], '🪙')} Размер комиссии: <code>{fee}%</code>\n\n"
-            f"Если пользователь хочет получить на баланс 100 ₽, он заплатит <code>{int(100 * 100 / (100 - fee))} ₽</code>",
+            f"Если пользователь хочет получить на баланс 100 ₽, он заплатит <code>{round(100 / (1 - fee/100))} ₽</code>",
             parse_mode="HTML",
             reply_markup=get_admin_keyboard(shop_mode)
         )
@@ -1206,7 +1224,7 @@ async def admin_manage_products(callback: CallbackQuery):
         text += f"{emoji(EMOJI['verified'], '🆔')} ID: {p['id']}\n"
         text += f"{emoji(EMOJI['document'], '📛')} Название: {p['name']}\n"
         text += f"{emoji(EMOJI['dollar'], '💰')} Цена: {p['price']} ₽\n"
-        text += f"{emoji(EMOJI['key'], '🗑️')} /delproduct_{p['id']} - удалить товар\n\n"
+        text += f"{emoji(EMOJI['trash'], '🗑️')} /delproduct_{p['id']} - удалить товар\n\n"
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]]))
     await callback.answer()
@@ -1219,9 +1237,16 @@ async def delete_product_cmd(message: Message):
         product_id = int(message.text.split("_")[1])
         await delete_product(product_id)
         shop_mode = await get_setting("shop_mode")
-        await message.answer(f"{emoji(EMOJI['check'], '✅')} Товар удален!", reply_markup=get_admin_keyboard(shop_mode))
+        await message.answer(
+            f"{emoji(EMOJI['check'], '✅')} Товар удален!",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(shop_mode)
+        )
     except:
-        await message.answer(f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении")
+        await message.answer(
+            f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении",
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(lambda c: c.data == "admin_manage_keys")
 async def admin_manage_keys(callback: CallbackQuery):
@@ -1270,7 +1295,7 @@ async def show_keys(callback: CallbackQuery):
     for k in keys:
         status = f"{emoji(EMOJI['check'], '✅')} Использован" if k["used"] else f"{emoji(EMOJI['android'], '🟢')} Доступен"
         text += f"{emoji(EMOJI['verified'], '🆔')} ID: {k['id']} | {k['key_value']} | {status}\n"
-        text += f"{emoji(EMOJI['key'], '🗑️')} /delkey_{k['id']} - удалить ключ\n\n"
+        text += f"{emoji(EMOJI['trash'], '🗑️')} /delkey_{k['id']} - удалить ключ\n\n"
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_manage_keys", icon_custom_emoji_id=EMOJI["arrow_back"])]]))
     await callback.answer()
@@ -1283,9 +1308,16 @@ async def delete_key_cmd(message: Message):
         key_id = int(message.text.split("_")[1])
         await delete_key(key_id)
         shop_mode = await get_setting("shop_mode")
-        await message.answer(f"{emoji(EMOJI['check'], '✅')} Ключ удален!", reply_markup=get_admin_keyboard(shop_mode))
+        await message.answer(
+            f"{emoji(EMOJI['check'], '✅')} Ключ удален!",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(shop_mode)
+        )
     except:
-        await message.answer(f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении")
+        await message.answer(
+            f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении",
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(lambda c: c.data == "admin_add_balance")
 async def admin_add_balance(callback: CallbackQuery, state: FSMContext):
@@ -1556,7 +1588,7 @@ async def admin_list_promocodes(callback: CallbackQuery):
         text += f"{emoji(EMOJI['key'], '🔹')} <code>{p['code']}</code>\n"
         text += f"   {emoji(EMOJI['clock'], '📊')} {type_text}\n"
         text += f"   {emoji(EMOJI['repeat'], '📊')} Использован: {p['used_count']}/{p['max_uses']}\n"
-        text += f"   {emoji(EMOJI['key'], '🗑️')} /del_{p['id']} - удалить\n\n"
+        text += f"   {emoji(EMOJI['trash'], '🗑️')} /del_{p['id']} - удалить\n\n"
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard(shop_mode))
     await callback.answer()
@@ -1569,9 +1601,16 @@ async def delete_promocode_cmd(message: Message):
         promocode_id = int(message.text.split("_")[1])
         await delete_promocode(promocode_id)
         shop_mode = await get_setting("shop_mode")
-        await message.answer(f"{emoji(EMOJI['check'], '✅')} Промокод удален!", reply_markup=get_admin_keyboard(shop_mode))
+        await message.answer(
+            f"{emoji(EMOJI['check'], '✅')} Промокод удален!",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(shop_mode)
+        )
     except:
-        await message.answer(f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении")
+        await message.answer(
+            f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении",
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(lambda c: c.data == "admin_ref_config")
 async def admin_ref_config(callback: CallbackQuery, state: FSMContext):
@@ -1731,24 +1770,32 @@ def crypto_webhook():
         payload_str = data["update_object"].get("payload")
         if payload_str:
             try:
-                user_id_str, rub_amount_str = payload_str.split("_")
-                user_id = int(user_id_str)
-                rub_amount = int(rub_amount_str)
+                parts = payload_str.split("_")
+                user_id = int(parts[0])
                 
-                async def process():
-                    current = await get_balance(user_id)
-                    await update_user_balance(user_id, current + rub_amount)
-                    await bot.send_message(
-                        user_id,
-                        f"{emoji(EMOJI['check'], '✅')} <b>Оплата успешно получена!</b>\n\n"
-                        f"{emoji(EMOJI['dollar'], '💰')} Ваш баланс пополнен на <b>{rub_amount} ₽</b>\n"
-                        f"{emoji(EMOJI['almaz'], '📊')} Текущий баланс: <code>{current + rub_amount} ₽</code>\n\n"
-                        f"{emoji(EMOJI['joy'], '😊')} Спасибо за оплату!",
-                        parse_mode="HTML"
-                    )
-                    print(f"[CryptoPay] Выдано {rub_amount} руб пользователю {user_id}")
+                amount = None
+                for uid, info in pending_payments.items():
+                    if uid == user_id:
+                        amount = info["amount"]
+                        break
                 
-                asyncio.run_coroutine_threadsafe(process(), main_loop)
+                if amount:
+                    async def process():
+                        current = await get_balance(user_id)
+                        await update_user_balance(user_id, current + amount)
+                        await bot.send_message(
+                            user_id,
+                            f"{emoji(EMOJI['check'], '✅')} <b>Оплата успешно получена!</b>\n\n"
+                            f"{emoji(EMOJI['dollar'], '💰')} Ваш баланс пополнен на <b>{amount} ₽</b>\n"
+                            f"{emoji(EMOJI['almaz'], '📊')} Текущий баланс: <code>{current + amount} ₽</code>\n\n"
+                            f"{emoji(EMOJI['joy'], '😊')} Спасибо за оплату!",
+                            parse_mode="HTML"
+                        )
+                        if user_id in pending_payments:
+                            del pending_payments[user_id]
+                        print(f"[CryptoPay] Выдано {amount} руб пользователю {user_id}")
+                    
+                    asyncio.run_coroutine_threadsafe(process(), main_loop)
             except Exception as e:
                 print(f"[Webhook] Ошибка: {e}")
                 
