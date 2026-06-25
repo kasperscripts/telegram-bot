@@ -317,8 +317,14 @@ async def save_pending_order(user_id: int, order_id: str, amount: int):
 
 async def get_pending_order(order_id: str):
     async with pool.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM pending_orders WHERE order_id = $1 AND status = 'pending'", order_id)
+        return await conn.fetchrow(
+            "SELECT * FROM pending_orders WHERE order_id = $1 AND status = 'pending'",
+            order_id
+        )
 
 async def update_order_status(order_id: str, status: str):
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE pending_orders SET status = $1 WHERE order_id = $2", status, order_id)
+        await conn.execute(
+            "UPDATE pending_orders SET status = $1 WHERE order_id = $2",
+            status, order_id
+        )
