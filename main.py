@@ -1636,7 +1636,7 @@ async def admin_manage_products(callback: CallbackQuery):
             f"{emoji(EMOJI['folder'], '📭')} <b>Список товаров пуст</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
             ])
         )
         await callback.answer()
@@ -1653,7 +1653,7 @@ async def admin_manage_products(callback: CallbackQuery):
         text, 
         parse_mode="HTML", 
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
         ])
     )
     await callback.answer()
@@ -1671,7 +1671,7 @@ async def admin_manage_keys(callback: CallbackQuery):
             f"{emoji(EMOJI['folder'], '📭')} <b>Сначала добавьте товар</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
             ])
         )
         await callback.answer()
@@ -1680,7 +1680,7 @@ async def admin_manage_keys(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{p['name']} (ID: {p['id']})", callback_data=f"showkeys_{p['id']}")]
         for p in products
-    ] + [[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]])
+    ] + [[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]])
     
     await callback.message.edit_text(
         f"{emoji(EMOJI['key'], '🔑')} Выберите товар для просмотра ключей:",
