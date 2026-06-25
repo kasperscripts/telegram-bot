@@ -1217,11 +1217,10 @@ async def delete_product_cmd(message: Message):
             f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении",
             parse_mode="HTML"
         )
-
 @dp.callback_query(lambda c: c.data and c.data.startswith("showkeys_"))
 async def show_keys(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.answer(f"{emoji(EMOJI['key'], '⛔')}")
+        await callback.answer("⛔ Доступ запрещен")
         return
     
     product_id = int(callback.data.split("_")[1])
@@ -1232,18 +1231,25 @@ async def show_keys(callback: CallbackQuery):
         await callback.message.edit_text(
             f"{emoji(EMOJI['key'], '🔑')} <b>Ключи для товара {product['name']}</b>\n\nСписок пуст",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_manage_keys", icon_custom_emoji_id=EMOJI["arrow_back"])]])
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_keys")]
+            ])
         )
         await callback.answer()
         return
     
     text = f"{emoji(EMOJI['key'], '🔑')} <b>Ключи для товара {product['name']}</b>\n\n"
     for k in keys:
-        status = f"{emoji(EMOJI['check'], '✅')} Использован" if k["used"] else f"{emoji(EMOJI['android'], '🟢')} Доступен"
-        text += f"{emoji(EMOJI['verified'], '🆔')} ID: {k['id']} | {k['key_value']} | {status}\n"
-        text += f"{emoji(EMOJI['trash'], '🗑️')} /delkey_{k['id']} - удалить ключ\n\n"
+        status = "✅ Использован" if k["used"] else "🟢 Доступен"
+        text += f"🆔 ID: {k['id']} | {k['key_value']} | {status}\n🗑️ /delkey_{k['id']} - удалить ключ\n\n"
     
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_manage_keys", icon_custom_emoji_id=EMOJI["arrow_back"])]]))
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_keys")]
+        ])
+    )
     await callback.answer()
 
 @dp.message(lambda m: m.text and m.text.startswith("/delkey_"))
@@ -1659,6 +1665,38 @@ async def admin_manage_products(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(lambda c: c.data == "admin_manage_products")
+async def admin_manage_products(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    
+    products = await get_all_products()
+    if not products:
+        await callback.message.edit_text(
+            f"{emoji(EMOJI['folder'], '📭')} <b>Список товаров пуст</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
+            ])
+        )
+        await callback.answer()
+        return
+    
+    text = f"{emoji(EMOJI['store'], '📦')} <b>Список товаров</b>\n\n"
+    for p in products:
+        text += f"🆔 ID: {p['id']}\n📛 Название: {p['name']}\n💰 Цена: {p['price']} ₽\n🗑️ /delproduct_{p['id']} - удалить товар\n\n"
+    
+    await callback.message.edit_text(
+        text, 
+        parse_mode="HTML", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
+        ])
+    )
+    await callback.answer()
+
+
 @dp.callback_query(lambda c: c.data == "admin_manage_keys")
 async def admin_manage_keys(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -1717,10 +1755,7 @@ async def admin_list_promocodes(callback: CallbackQuery):
         else:
             type_text = f"{p['discount_value']} ₽ (бонус)"
         
-        text += f"{emoji(EMOJI['key'], '🔹')} <code>{p['code']}</code>\n"
-        text += f"   {emoji(EMOJI['clock'], '📊')} {type_text}\n"
-        text += f"   {emoji(EMOJI['repeat'], '📊')} Использован: {p['used_count']}/{p['max_uses']}\n"
-        text += f"   {emoji(EMOJI['trash'], '🗑️')} /del_{p['id']} - удалить\n\n"
+        text += f"🔹 <code>{p['code']}</code>\n   📊 {type_text}\n   📊 Использован: {p['used_count']}/{p['max_uses']}\n   🗑️ /del_{p['id']} - удалить\n\n"
     
     await callback.message.edit_text(
         text,
