@@ -1199,32 +1199,6 @@ async def process_keys_only(message: Message, state: FSMContext):
     )
     await state.clear()
 
-@dp.callback_query(lambda c: c.data == "admin_manage_products")
-async def admin_manage_products(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен")
-        return
-    
-    products = await get_all_products()
-    if not products:
-        await callback.message.edit_text(
-            f"{emoji(EMOJI['folder'], '📭')} <b>Список товаров пуст</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]])
-        )
-        await callback.answer()
-        return
-    
-    text = f"{emoji(EMOJI['store'], '📦')} <b>Список товаров</b>\n\n"
-    for p in products:
-        text += f"{emoji(EMOJI['verified'], '🆔')} ID: {p['id']}\n"
-        text += f"{emoji(EMOJI['document'], '📛')} Название: {p['name']}\n"
-        text += f"{emoji(EMOJI['dollar'], '💰')} Цена: {p['price']} ₽\n"
-        text += f"{emoji(EMOJI['trash'], '🗑️')} /delproduct_{p['id']} - удалить товар\n\n"
-    
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]]))
-    await callback.answer()
-
 @dp.message(lambda m: m.text and m.text.startswith("/delproduct_"))
 async def delete_product_cmd(message: Message):
     if not is_admin(message.from_user.id):
@@ -1243,30 +1217,6 @@ async def delete_product_cmd(message: Message):
             f"{emoji(EMOJI['key'], '❌')} Ошибка при удалении",
             parse_mode="HTML"
         )
-
-@dp.callback_query(lambda c: c.data == "admin_manage_keys")
-async def admin_manage_keys(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен")
-        return
-    
-    products = await get_all_products()
-    if not products:
-        await callback.message.edit_text(
-            f"{emoji(EMOJI['folder'], '📭')} <b>Сначала добавьте товар</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]])
-        )
-        await callback.answer()
-        return
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{p['name']} (ID: {p['id']})", callback_data=f"addkeys_{p['id']}")]
-        for p in products
-    ] + [[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]])
-    
-    await callback.message.edit_text(f"{emoji(EMOJI['key'], '🔑')} Выберите товар для просмотра ключей:", parse_mode="HTML", reply_markup=kb)
-    await callback.answer()
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("showkeys_"))
 async def show_keys(callback: CallbackQuery):
@@ -1553,41 +1503,6 @@ async def create_promocode_max_uses(message: Message, state: FSMContext):
         
     except ValueError:
         await message.answer(f"{emoji(EMOJI['key'], '❌')} Введите число", parse_mode="HTML")
-
-@dp.callback_query(lambda c: c.data == "admin_list_promocodes")
-async def admin_list_promocodes(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Доступ запрещен")
-        return
-    
-    promocodes = await get_all_promocodes()
-    shop_mode = await get_setting("shop_mode")
-    
-    if not promocodes:
-        await callback.message.edit_text(
-            f"{emoji(EMOJI['folder'], '📭')} <b>Список промокодов пуст</b>",
-            parse_mode="HTML",
-            reply_markup=get_admin_keyboard(shop_mode)
-        )
-        await callback.answer()
-        return
-    
-    text = f"{emoji(EMOJI['discount'], '🎫')} <b>Список промокодов</b>\n\n"
-    for p in promocodes:
-        if p["discount_type"] == "percent":
-            type_text = f"{p['discount_value']}%"
-        elif p["discount_type"] == "rubles":
-            type_text = f"{p['discount_value']} ₽ (скидка)"
-        else:
-            type_text = f"{p['discount_value']} ₽ (бонус)"
-        
-        text += f"{emoji(EMOJI['key'], '🔹')} <code>{p['code']}</code>\n"
-        text += f"   {emoji(EMOJI['clock'], '📊')} {type_text}\n"
-        text += f"   {emoji(EMOJI['repeat'], '📊')} Использован: {p['used_count']}/{p['max_uses']}\n"
-        text += f"   {emoji(EMOJI['trash'], '🗑️')} /del_{p['id']} - удалить\n\n"
-    
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard(shop_mode))
-    await callback.answer()
     
 @dp.message(lambda m: m.text and m.text.startswith("/del_"))
 async def delete_promocode_cmd(message: Message):
@@ -1703,6 +1618,112 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
     shop_mode = await get_setting("shop_mode")
     await callback.message.edit_text(
         f"{emoji(EMOJI['crown'], '🔐')} <b>Админ-панель</b>",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard(shop_mode)
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "admin_manage_products")
+async def admin_manage_products(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    
+    products = await get_all_products()
+    if not products:
+        await callback.message.edit_text(
+            f"{emoji(EMOJI['folder'], '📭')} <b>Список товаров пуст</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]
+            ])
+        )
+        await callback.answer()
+        return
+    
+    text = f"{emoji(EMOJI['store'], '📦')} <b>Список товаров</b>\n\n"
+    for p in products:
+        text += f"{emoji(EMOJI['verified'], '🆔')} ID: {p['id']}\n"
+        text += f"{emoji(EMOJI['document'], '📛')} Название: {p['name']}\n"
+        text += f"{emoji(EMOJI['dollar'], '💰')} Цена: {p['price']} ₽\n"
+        text += f"{emoji(EMOJI['trash'], '🗑️')} /delproduct_{p['id']} - удалить товар\n\n"
+    
+    await callback.message.edit_text(
+        text, 
+        parse_mode="HTML", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]
+        ])
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "admin_manage_keys")
+async def admin_manage_keys(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    
+    products = await get_all_products()
+    if not products:
+        await callback.message.edit_text(
+            f"{emoji(EMOJI['folder'], '📭')} <b>Сначала добавьте товар</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]
+            ])
+        )
+        await callback.answer()
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{p['name']} (ID: {p['id']})", callback_data=f"showkeys_{p['id']}")]
+        for p in products
+    ] + [[InlineKeyboardButton(text="Назад", callback_data="admin_back", icon_custom_emoji_id=EMOJI["arrow_back"])]])
+    
+    await callback.message.edit_text(
+        f"{emoji(EMOJI['key'], '🔑')} Выберите товар для просмотра ключей:",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "admin_list_promocodes")
+async def admin_list_promocodes(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+    
+    promocodes = await get_all_promocodes()
+    shop_mode = await get_setting("shop_mode")
+    
+    if not promocodes:
+        await callback.message.edit_text(
+            f"{emoji(EMOJI['folder'], '📭')} <b>Список промокодов пуст</b>",
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(shop_mode)
+        )
+        await callback.answer()
+        return
+    
+    text = f"{emoji(EMOJI['discount'], '🎫')} <b>Список промокодов</b>\n\n"
+    for p in promocodes:
+        if p["discount_type"] == "percent":
+            type_text = f"{p['discount_value']}%"
+        elif p["discount_type"] == "rubles":
+            type_text = f"{p['discount_value']} ₽ (скидка)"
+        else:
+            type_text = f"{p['discount_value']} ₽ (бонус)"
+        
+        text += f"{emoji(EMOJI['key'], '🔹')} <code>{p['code']}</code>\n"
+        text += f"   {emoji(EMOJI['clock'], '📊')} {type_text}\n"
+        text += f"   {emoji(EMOJI['repeat'], '📊')} Использован: {p['used_count']}/{p['max_uses']}\n"
+        text += f"   {emoji(EMOJI['trash'], '🗑️')} /del_{p['id']} - удалить\n\n"
+    
+    await callback.message.edit_text(
+        text,
         parse_mode="HTML",
         reply_markup=get_admin_keyboard(shop_mode)
     )
