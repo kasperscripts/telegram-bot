@@ -31,8 +31,8 @@ from database import (
     get_all_promocodes, delete_promocode, get_referrer, get_referrals_count, get_paid_referrals_count,
     get_referral_config, update_referral_config, add_balance, get_product_by_id,
     delete_product, get_keys_by_product, delete_key, mark_purchased, has_user_purchased,
-    get_setting, update_setting, create_manual_order, get_manual_order, update_manual_order_status, get_pending_manual_orders,
-    get_crypto_fee, set_crypto_fee, update_order_status, get_pending_order, pool
+    get_setting, update_setting, get_crypto_fee, set_crypto_fee,
+    update_order_status, get_pending_order, save_pending_order, pool
 )
 
 EMOJI = {
@@ -565,10 +565,8 @@ async def process_manual_deposit_screenshot(message: Message, state: FSMContext)
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
     
-    # Короткий ID (8 символов) чтобы точно влез в callback_data
     order_id = str(uuid.uuid4())[:8]
     
-    # ИСПРАВЛЕНО: Используем готовую функцию save_pending_order вместо прямого запроса
     try:
         from database import save_pending_order
         await save_pending_order(user_id, order_id, amount)
